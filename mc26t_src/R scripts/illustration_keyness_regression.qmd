@@ -1,0 +1,584 @@
+---
+title: "Regression models for keyness analysis: Illustration"
+format:
+  html:
+    embed-resources: true
+---
+
+This document illustrates how to run negative binomial regression models using the `{gamlss}` package in R.
+
+
+### Load packages
+
+We start by loading the `{gamlss}` package. Note that if you haven't installed it yet, you first need to do so using `install.packages("gamlss")`.
+
+```{r}
+#| message: false
+#| warning: false
+
+library(tidyverse)
+library(gamlss)
+library(here)
+```
+
+
+
+### Illustrative model for the usage rate of *actually* in the SpokenBNC2014
+
+The data are stored in the OSF project, in the folder "example data" [https://osf.io/x3agy](https://osf.io/x3agy). For more information on the dataset, please refer to the following TROLLing post:
+
+- Sönning, Lukas, and Manfred Krug. 2021. Actually in contemporary British speech: Data from the spoken BNC Corpora. [https://doi.org/10.18710/A3SATC](https://doi.org/10.18710/A3SATC). DataverseNO, V1.
+
+Load the data:
+
+```{r}
+actually_data <- read.csv(
+	here("data/example_data", 
+		 "actually_data.csv"))
+```
+
+Inspect the data frame:
+
+```{r}
+str(actually_data)
+```
+
+There are 668 speakers in total. For each individual, the data frame includes:
+
+- an ID (`speaker`)
+- the number of times they used *actually* (`count`)
+- the total number of words contributed to the corpus by the speaker (`total`), and 
+- the usage rate (`rate`), which is a normalized frequency (`count` divided by `total`), here a proportion (i.e. per 1 word). 
+
+Multiplying `rate` by 1,000 would give us a normalized frequency of "per thousand words".
+
+
+#### Poisson model
+
+We start by fitting a simple Poisson model. While this can be done using the base R function `glm()`, we will use the `{gamlss}` package right away. Since speakers in the SpokenBNC2014 differ in the number of words they contribute to the corpus, the model must include what is referred to as an offset. Hence the code chunk `offset(log(total))`. The argument `family = PO` states that we want to fit a Poisson model.
+
+```{r}
+#| results: false
+
+m_poi <- gamlss(
+	count ~ 1 + offset(log(total)), 
+	data = actually_data, 
+	family = PO)
+```
+
+We use the function `summary()` to obtain a summary of the regression model. The default output of just running `summary(m_poi)` is quite bulky:
+
+```{r}
+summary_poi <- summary(m_poi)
+```
+
+We have assigned the output to a new object `summary_poi`, which includes all the information we need at the moment.
+
+```{r}
+summary_poi
+```
+
+These coefficients are on the log scale, so we need to exponentiate them for interpretation. We start by extracting specific coefficients from the model summary. We first extract the model intercept, which gives information about the average usage rate of *actually* in the corpus:
+
+```{r}
+log_rate <- summary_poi[1,1]
+```
+
+Print it out and compare to the output above to see which number you have accessed:
+
+```{r}
+log_rate
+```
+
+Exponentiating this estimate gives us the usage rate per 1 word of running text:
+
+```{r}
+exp(log_rate)
+```
+
+When talking about the usage rate of *actually*, a normalized frequency of "per thousand words" is more convenient, so we multiply this by 1000:
+
+```{r}
+exp(log_rate)*1000
+```
+
+Let's also round this to a sensible number of decimal places:
+
+```{r}
+round(exp(log_rate)*1000, 2)
+```
+
+Next, we extract the standard error of the intercept, which gives information about the statistical uncertainty surrounding this estimate.
+
+```{r}
+log_rate_se <- summary_poi[1,2]
+```
+
+Again, to make sure you got the thing you wanted, print it out and compare to the model output above:
+
+```{r}
+log_rate_se
+```
+
+The interval of +/- 2 standard errors around the estimate gives an approximate 95% confidence interval. Note that, importantly, we need to first determine these confidence limits on the log scale, and then exponentiate them. So the lower limit on the log scale is:
+
+```{r}
+log_rate - (2*log_rate_se)
+```
+
+And the upper limit, on the log scale, is:
+
+```{r}
+log_rate + (2*log_rate_se)
+```
+
+By wrapping the `exp()` function around these code chunks, we get the confidence interval on the normalized frequency scale:
+
+```{r}
+exp(log_rate - (2*log_rate_se))
+exp(log_rate + (2*log_rate_se))
+```
+
+Again, multiply by 1,000 to get a normalized frequency of "per thousand words", and round:
+
+```{r}
+round(exp(log_rate - (2*log_rate_se)) * 1000, 2)
+round(exp(log_rate + (2*log_rate_se)) * 1000, 2)
+```
+
+
+#### Negative binomial model
+
+We now fit a negative binomial regression model. All we need to change in the code is the `family` argument: Instead of `family = PO` we now request a negative binomial regression model using `family = NBI`. 
+
+```{r}
+#| results: false
+
+m_nb2 <- gamlss(
+	count ~ 1 + offset(log(total)), 
+	data = actually_data, 
+	family = NBI)
+```
+
+Note that there are in fact different kinds of negative binomial regression models, the two most common ones being referred to as the "NB1" and the "NB2" model. Unfortunately, `{gamlss}` uses the label "NBI" for the version that most other software packages and statistical texts call the "NB2" model. This is the most frequently used variant, and the one we will be using.
+
+
+Model summary:
+
+```{r}
+#| results: false
+
+summary_nb2 <- summary(m_nb2)
+```
+
+```{r}
+summary_nb2
+```
+
+
+##### Rate (frequency) estimates
+
+We start by extracting information about the rate of occurrence of *actually*:
+
+Extract coefficients:
+
+```{r}
+log_rate    <- summary_nb2[1,1]
+log_rate_se <- summary_nb2[1,2]
+```
+
+Occurrence rate estimate (per thousand words), properly rounded:
+
+```{r}
+round(exp(log_rate)*1000, 2)
+```
+
+And an approximate 95% CI, properly rounded:
+
+```{r}
+round(exp(c(log_rate - 2*log_rate_se, 
+			log_rate + 2*log_rate_se))*1000, 2)
+```
+
+
+
+##### Dispersion estimates
+
+The negative binomial regression model also includes information about the between-speaker variability in the usage rate of *actually*. This information is contained in the so-called scale parameter. This parameter defines the shape of a gamma distribution, which in turn represents the spread of the usage rates across speakers. This parameter is also modeled on the log scale. We first extract it from the model summary object:
+
+```{r}
+log_scale_parameter <- summary_nb2[2,1]
+```
+
+Then we "un-log" (i.e. exponentiate) it:
+
+```{r}
+scale_parameter <- exp(log_scale_parameter)
+```
+
+The following code transforms the gamma scale parameter into a standardized dispersion measure (*D~NB~*):
+
+```{r}
+D_NB <- 1 - exp(-1 / scale_parameter)
+round(D_NB, 2)
+```
+
+Note that a gamma distribution can also be defined using what is referred to as a "shape" parameter, which is the inverse of the scale parameter (i.e. 1/scale). This means that if you use a different procedure for fitting a negative binomial regression model (e.g. a different R package and/or function), you need to find out which one of the two parameters it returns; for more information, see this [blog post](https://lsoenning.github.io/posts/2023-12-13_negative_binomial_parameterization/).
+
+
+The following code computes what we refer to as negative binomial text dispersion (*NB-TD*):
+
+```{r}
+NB_TD <- 1 - dNBI(
+	0,  
+	mu = exp(log_rate)*1000, 
+	sigma = scale_parameter)
+
+round(NB_TD, 2)
+```
+
+
+### Model for DEFINE
+
+Our next task is to use a negative binomial regression model to compare two text varieties. To this end, we look at the usage rate of the verb lemma DEFINE in the COCA sections "academic" (ACAD) and "fiction" (FIC).
+
+We start by loading the data, which are stored in the OSF project, in the folder "example data" [https://osf.io/he57w](https://osf.io/he57w). 
+
+```{r}
+define_data <- read.csv(
+	here("data/example_data", 
+		 "define_data.csv"), 
+	row.names = 1)
+```
+
+
+The data table is an excerpt from a larger data set, which is documented in the following TROLLing post:
+
+- Sönning, Lukas. 2023. Key verbs in academic writing: Dataset for "Evaluation of keyness metrics: Performance and reliability", [https://doi.org/10.18710/EUXSMW](https://doi.org/10.18710/EUXSMW), DataverseNO, V1.
+
+The following code extracts this subset from the data table `coca_keyverb_data`, which was compiled in the notebook `script_figures_tables.qmd`.
+
+```{r}
+#| eval: false
+
+# define_data <- subset(
+# 	coca_keyverb_data,
+# 	lemma == "define")
+# 
+# add_data <- subset(
+# 	COCA_metadata_ACAD_FIC,
+# 	!(text_id %in% define_data$text_id))
+# 
+# add_data_acad <- subset(add_data, genre == "ACAD")
+# add_data_fict <- subset(add_data, genre == "FIC")
+# 
+# add_data_acad$lemma <- "define"
+# add_data_fict$lemma <- "define"
+# 
+# add_data_acad$n_tokens <- 0
+# add_data_fict$n_tokens <- 0
+# 
+# add_data_acad <- add_data_acad[,c(1,7,8,2,3,4,5,6)]
+# add_data_fict <- add_data_fict[,c(1,7,8,2,3,4,5,6)]
+# 
+# define_data <- rbind(
+# 	define_data,
+# 	add_data_acad,
+# 	add_data_fict
+# )
+# 
+# define_data <- subset(
+# 	define_data,
+# 	year %in% c(2018, 2019)
+# )
+# 
+# write.csv(
+# 	define_data,
+# 	here("data/example_data",
+# 		 "define_data.csv"))
+```
+
+
+We add an indicator variable to the data frame, which is coded as "1" if the text is from the academic section, and "0" if it is from the newspaper section.
+
+```{r}
+define_data$acad <- ifelse(
+	define_data$genre == "ACAD", 1, 0)
+```
+
+Look at the data frame:
+
+```{r}
+str(define_data)
+```
+
+
+
+The data includes information about 2,769 text files, including the following variables: 
+
+- a text ID (`text_id`) 
+- the verb lemma "define" (`lemma`)
+- the number of times the verb lemma DEFINE occurred in the text (`n_tokens`)
+- the year the text was published (`year`)
+- the `genre` ("FIC" vs. "ACAD")
+- the `subgenre`
+- the length of the text (`word_count`)
+- a random ID running from 1 to 100 for the evaluations study (`random_id`)
+- the indicator variable we just added to the table.
+
+Let's have a closer look at these data and compare the two corpora in terms of:
+
+- the number of texts
+- the average text length
+- the total number of words
+
+```{r}
+define_data |> 
+	group_by(genre) |> 
+	dplyr::summarize(
+		n_texts = n(),
+		average_text_length = round(mean(word_count), 0),
+		total_n_words = sum(word_count)
+	)
+```
+
+Average text length in each genre:
+
+We now fit what is referred to as a location-scale model using the `{gamlss}` package. This means that we model not only the average usage rate, which is what a standard regression model would do, but also the variability of text-specific occurrence rates around this average, which is represented by the scale parameter. This means that we add a predictor to see whether the variability in the usage rate of DEFINE differs between academic and newspaper writing. The code therefore includes a new argument `sigma.formula = ... `, which defines the model for the scale parameter.
+
+To obtain the information we need, we fit two different models:
+
+- `m1`, which does not include an intercept and therefore returns estimates for NEWS, and estimates for ACAD.
+- `m2`, which *does* include an intercept and therefore returns estimates for NEWS (which is coded as 0), and an estimate of the difference between ACAD and NEWS.
+
+
+```{r}
+#| results: false
+
+m1  <- gamlss(
+	n_tokens ~ -1 + genre + offset(log(word_count)), 
+	sigma.formula = ~ -1 + genre, 
+	data = define_data, 
+	family = NBI)
+
+m2 <- gamlss(
+	n_tokens ~ acad + offset(log(word_count)), 
+	sigma.formula = ~ acad, 
+	data = define_data, 
+	family = NBI)
+```
+
+Here is the summary for model `m1` (no intercept):
+
+```{r}
+#| results: false
+
+summary_m1 <- summary(m1)
+```
+
+```{r}
+summary_m1
+```
+
+
+And the summary for model `m2` (with intercept):
+
+```{r}
+#| results: false
+
+summary_m2 <- summary(m2)
+```
+
+```{r}
+summary_m2
+```
+
+Now we translate these coefficients into meaningful keyness metrics. We start by obtaining usage rate estimates for each genre. These are contained in model `m1`. We start with ACAD. First extract the coefficient:
+
+```{r}
+log_rate_acad <- summary_m1[1,1]
+```
+
+Exponentiate it:
+
+```{r}
+exp(log_rate_acad)
+```
+
+Given the frequency of DEFINE, the "per million word" scale is convenient:
+
+```{r}
+exp(log_rate_acad) * 1000000
+```
+
+Let's not forget to round this estimate:
+
+```{r}
+round(exp(log_rate_acad) * 1000000, 0)
+```
+
+Next, we construct a 95% CI for this estimate. We first extract the standard error.
+
+```{r}
+log_rate_se_acad <- summary_m1[1,2]
+```
+
+Then we find the interval covering +/- 2 standard errors around the log rate, exponeniate the endpoints, and round:
+
+```{r}
+ci_acad <- exp(c(log_rate_acad - 2*log_rate_se_acad, 
+				 log_rate_acad + 2*log_rate_se_acad))*1000000
+round(ci_acad, 0)
+```
+
+We now do the same for FIC. First extract the coefficient:
+
+```{r}
+log_rate_fict <- summary_m1[2,1]
+```
+
+Exponentiate it, express as "per million words", and round:
+
+```{r}
+round(exp(log_rate_fict) * 1000000, 0)
+```
+
+And construct a 95% CI for this estimate:
+
+```{r}
+log_rate_se_fict <- summary_m1[2,2]
+ci_fict <- exp(c(log_rate_fict - 2*log_rate_se_fict, 
+				 log_rate_fict + 2*log_rate_se_fict))*1000000
+round(ci_fict, 0)
+```
+
+We now have separate usage rate estimates for DEFINE. We are also interested in a direct comparison, and for count data, the relative difference is usually most informative. This means that we are looking for the rate ratio. This information is contained in model `m2`. Let's look at the output of this model:
+
+```{r}
+summary_m2
+```
+
+The second line in the regression table, which is labeled "acad", reports on the difference between the genres. It is a log rate ratio. This means that we again need to "un-log" it via exponentiation, to obtain a rate ratio. We first extract the coefficient:
+
+```{r}
+log_rate_ratio <- summary_m2[2,1]
+```
+
+Then exponentiate and round:
+
+```{r}
+round(exp(log_rate_ratio), 1)
+```
+
+This tells us that the verb lemma DEFINE is about 8 times more frequent in academic writing compared to fiction. An approximate 95% CI is obtained as follows. First extract the standard error:
+
+```{r}
+log_rate_ratio_se <- summary_m2[2,2]
+```
+
+And construct the 95% CI as we did above:
+
+```{r}
+round(exp(c(log_rate_ratio - 2*log_rate_ratio_se, 
+			log_rate_ratio + 2*log_rate_ratio_se)), 1)
+```
+
+
+
+Next, we turn to the scale parameters. The procedure is the same as above. Extract coefficients:
+
+```{r}
+log_scale_acad <- summary_m1[3,1]
+log_scale_fict <- summary_m1[4,1]
+
+log_scale_se_acad <- summary_m1[3,2]
+log_scale_se_fict <- summary_m1[4,2]
+```
+
+Construct an approximate 95% CI on the log scale:
+
+```{r}
+ci_log_scale_acad <- c(log_scale_acad - 2*log_scale_se_acad, 
+					   log_scale_acad + 2*log_scale_se_acad)
+ci_log_scale_fict <- c(log_scale_fict - 2*log_scale_se_fict, 
+					   log_scale_fict + 2*log_scale_se_fict)
+```
+
+Exponentiate:
+
+```{r}
+scale_acad <- exp(log_scale_acad)
+scale_fict <- exp(log_scale_fict)
+
+ci_scale_acad <- exp(ci_log_scale_acad)
+ci_scale_fict <- exp(ci_log_scale_fict)
+```
+
+Transform the gamma shape parameter into a standardized dispersion measure (*D~NB~*):
+
+```{r}
+DNB_acad <- 1-exp(-1/scale_acad)
+DNB_fict <- 1-exp(-1/scale_fict)
+
+ci_DNB_acad <- 1-exp(-1/ci_scale_acad)
+ci_DNB_fict <- 1-exp(-1/ci_scale_fict)
+```
+
+Round:
+
+```{r}
+round(DNB_acad, 2)
+round(DNB_fict, 2)
+
+round(ci_DNB_acad, 2)
+round(ci_DNB_fict, 2)
+```
+
+To obtain a 95% CI on the difference between the standardized dispersion measures (*D~NB~*), we use an inversion interval (see [Newcombe 2013](https://www.routledge.com/Confidence-Intervals-for-Proportions-and-Related-Measures-of-Effect-Size/Newcombe/p/book/9780367576707?srsltid=AfmBOoo2wxWd27onPyqJ1cmzVKqb3V7wFBfGjlUoisnpmG-Hghxs_wGS): 132). We start by writing a function that takes 6 arguments:
+
+- p1: 		point estimate 1 (*D~NB~* for ACAD)
+- p1_lo:	lower limit of the 95% CI for p1
+- p1_up:	upper limit of the 95% CI for p1
+- p2: 		point estimate 1 (*D~NB~* for NEWS)
+- p2_lo:	lower limit of the 95% CI for p2
+- p2_up:	upper limit of the 95% CI for p2
+
+```{r}
+mover <- function(p1, p1_lo, p1_up,
+				  p2, p2_lo, p2_up){
+	diff <- p1 - p2
+	diff_lo <- p1 - p2 - sqrt((p1 - p1_lo)^2 + (p2_up - p2)^2)
+	diff_up <- p1 - p2 + sqrt((p1_up - p1)^2 + (p2 - p2_lo)^2)
+	
+	output <- c(diff, diff_lo, diff_up)
+	names(output) <- c("difference", "upper limit", "lower limit")
+	return(output)
+}
+```
+
+And we feed our estimates into the function:
+
+```{r}
+round(
+	mover(DNB_acad, ci_DNB_acad[1], ci_DNB_acad[2],
+		  DNB_fict, ci_DNB_fict[1], ci_DNB_fict[2]), 2)
+
+```
+NB-TD estimates for a 10,000-word text
+
+```{r}
+# ACAD
+1 - dNBI(
+	0, 
+	mu = exp(log_rate_acad)*1e4,
+	sigma = exp(log_scale_acad))
+
+# FIC
+1 - dNBI(
+	0, 
+	mu = exp(log_rate_fict)*1e4,
+	sigma = exp(log_scale_fict))
+```
+
+
+

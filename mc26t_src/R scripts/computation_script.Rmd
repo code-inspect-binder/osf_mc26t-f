@@ -1,0 +1,352 @@
+
+# Computations
+
+```{r}
+library(tidyverse)
+
+coca_keyverb_data <- read.csv("./data/coca_keyverb_data.csv", row.names = 1, stringsAsFactors = T)
+coca_keyverb_texts <- read.csv("./data/coca_keyverb_texts.csv", row.names = 1, stringsAsFactors = T)
+```
+
+```{r}
+# Load packages
+library(PropCIs)
+library(pairwiseCI)
+
+# Define functions
+g.test <- function(x, y = NULL, correct="none", p = rep(1/length(x), length(x)))
+{
+  DNAME <- deparse(substitute(x))
+  if (is.data.frame(x)) x <- as.matrix(x)
+  if (is.matrix(x)) {
+    if (min(dim(x)) == 1) 
+      x <- as.vector(x)
+  }
+  if (!is.matrix(x) && !is.null(y)) {
+    if (length(x) != length(y)) 
+      stop("x and y must have the same length")
+    DNAME <- paste(DNAME, "and", deparse(substitute(y)))
+    OK <- complete.cases(x, y)
+    x <- as.factor(x[OK])
+    y <- as.factor(y[OK])
+    if ((nlevels(x) < 2) || (nlevels(y) < 2)) 
+      stop("x and y must have at least 2 levels")
+    x <- table(x, y)
+  }
+  if (any(x < 0) || any(is.na(x))) 
+    stop("all entries of x must be nonnegative and finite")
+  if ((n <- sum(x)) == 0) 
+    stop("at least one entry of x must be positive")
+  #If x is matrix, do test of independence
+  if (is.matrix(x)) {
+    #this block was the separate g.stat function
+    cell.tot <- row.tot <- col.tot <- grand.tot <- 0
+    nrows<-nrow(x)
+    ncols<-ncol(x)
+    if (correct=="yates"){ # Do Yates' correction
+      if(dim(x)[1]!=2 || dim(x)[2]!=2) # check for 2x2 matrix
+        stop("Yates' correction requires a 2 x 2 matrix")
+      if((x[1,1]*x[2,2])-(x[1,2]*x[2,1]) > 0)
+      {
+        x[1,1] <- x[1,1] - 0.5
+        x[2,2] <- x[2,2] - 0.5
+        x[1,2] <- x[1,2] + 0.5
+        x[2,1] <- x[2,1] + 0.5
+      }
+      else
+      {
+        x[1,1] <- x[1,1] + 0.5
+        x[2,2] <- x[2,2] + 0.5
+        x[1,2] <- x[1,2] - 0.5
+        x[2,1] <- x[2,1] - 0.5
+      }
+    }
+    # calculate G (Zar, 2000)
+    for (i in 1:nrows){
+      for (j in 1:ncols){
+        if (x[i,j] != 0) cell.tot <- cell.tot + x[i,j] * log10(x[i,j])
+      }
+    }
+    for (i in 1:nrows){ row.tot <- row.tot + (sum(x[i,])) * log10(sum(x[i,])) }
+    for (j in 1:ncols){ col.tot <- col.tot + (sum(x[,j])) * log10(sum(x[,j])) }
+    grand.tot <- sum(x)*log10(sum(x))
+    total <- cell.tot - row.tot - col.tot + grand.tot
+    G <- 4.60517 * total
+    q <- 1
+    if (correct=="williams"){ # Do Williams' correction
+      row.tot <- col.tot <- 0    
+      for (i in 1:nrows){ row.tot <- row.tot + 1/(sum(x[i,])) }
+      for (j in 1:ncols){ col.tot <- col.tot + 1/(sum(x[,j])) }
+      q <- 1+ ((n*row.tot-1)*(n*col.tot-1))/(6*n*(ncols-1)*(nrows-1))
+    }
+    G <- (G/q)
+    # end of old g.stat function
+    
+    STATISTIC <- G
+    PARAMETER <- (nrow(x)-1)*(ncol(x)-1)
+    PVAL <- 1-pchisq(STATISTIC,df=PARAMETER)
+    if(correct=="none")
+      METHOD <- "Log likelihood ratio (G-test) test of independence without correction"
+    if(correct=="williams")
+      METHOD <- "Log likelihood ratio (G-test) test of independence with Williams' correction"
+    if(correct=="yates")
+      METHOD <- "Log likelihood ratio (G-test) test of independence with Yates' correction"
+  }
+  else {
+    # x is not a matrix, so we do Goodness of Fit
+    METHOD <- "Log likelihood ratio (G-test) goodness of fit test"
+    if (length(x) == 1) 
+      stop("x must at least have 2 elements")
+    if (length(x) != length(p)) 
+      stop("x and p must have the same number of elements")
+    E <- n * p
+    
+    if (correct=="yates"){ # Do Yates' correction
+      if(length(x)!=2)
+        stop("Yates' correction requires 2 data values")
+      if ( (x[1]-E[1]) > 0.25) {
+        x[1] <- x[1]-0.5
+        x[2] <- x[2]+0.5
+      }
+      else if ( (E[1]-x[1]) > 0.25){
+        x[1] <- x[1]+0.5
+        x[2] <- x[2]-0.5
+      }
+    }
+    names(E) <- names(x)
+    tot <- 0
+    for (i in 1:length(x)){
+      if (x[i] != 0) tot <- tot + x[i] * log(x[i]/E[i])
+    }
+    G <- (2*tot)
+    if (correct=="williams"){ # Do Williams' correction
+      q <- 1+(length(x)+1)/(6*n)
+      G <- (G/q)
+    }
+    STATISTIC <- (G)
+    PARAMETER <- length(x) - 1
+    PVAL <- pchisq(STATISTIC, PARAMETER, lower = FALSE)
+  }
+  names(STATISTIC) <- "Log likelihood ratio statistic (G)"
+  names(PARAMETER) <- "X-squared df"
+  names(PVAL) <- "p.value"
+  structure(list(statistic=STATISTIC,parameter=PARAMETER,p.value=PVAL,
+                 method=METHOD,data.name=DNAME),class="htest")
+}
+
+fun_dispersion <- function(n_tokens, word_count){
+	rate_i <- n_tokens / word_count
+	r_i <- rate_i / sum(rate_i)
+	t_i <- n_tokens / sum(n_tokens)
+	w_i <- word_count / sum(word_count)
+	K <- length(t_i)
+	
+	d_tw <- (t_i - w_i)
+	dist_r <- as.vector(dist(r_i, method = "manhattan"))
+
+	ADA <- 1 - (sum(abs(d_tw)) / (2*((K-1)/K)))
+	MDA <- 1 - (sum(dist_r)/(K-1))
+	JD <- 1 - ((sd(rate_i)/mean(rate_i)) / sqrt(K))
+	RS <- (sum(sqrt(w_i * t_i))^2)
+	CD <- -sum(r_i * ifelse(r_i==0, 0, log2(r_i)))/log2(K)
+	DPn  <- 1 - ((sum(abs(t_i - w_i)) / 2) / (1-min(w_i)))
+	KL <- sum(t_i * ifelse(t_i == 0, 0, log2(t_i/w_i)))
+	
+	output <- c(ADA, MDA,
+				JD, RS, CD, KL, DPn)
+	names(output) <- c("ADA", "MDA",
+					   "JD","RS","CD","KL", "DPn")
+	return(output)
+}
+
+function_keyword_dispersion <- function(data){
+	dat_acad <- data[data$acad==1,]
+	dat_othr <- data[data$acad==0,]
+	
+	dispersion_measures_acad <- fun_dispersion(
+		dat_acad$n_tokens, dat_acad$word_count)
+	
+	dispersion_measures_othr <- fun_dispersion(
+		dat_othr$n_tokens, dat_othr$word_count)
+	
+	dispersion_measures_diff <- dispersion_measures_acad - dispersion_measures_othr
+
+	
+	return(cbind(dispersion_measures_acad,
+				 dispersion_measures_othr,
+				 dispersion_measures_diff))
+}
+
+
+# Initiate arrays for results
+keyverb_results_p <- array(
+	NA, dim = c(nlevels(coca_keyverb_data$lemma), 2, 2, 100),
+	dimnames = list(levels(coca_keyverb_data$lemma),
+					c("lr_test", "chisq_test"),
+					c("tokens", "text_dispersion"),
+					1:100))
+
+keyverb_results_ci <- array(
+	NA, dim = c(nlevels(coca_keyverb_data$lemma), 5, 7, 100),
+	dimnames = list(levels(coca_keyverb_data$lemma),
+					c("ci_90_lo", "ci_50_lo", "est_mean", "ci_50_up", "ci_90_up"),
+					c("rate_diff", "rate_ratio", "text_dispersion", "text_dispersion_diff", 
+					  "odds_ratio", "perc_diff", "diff_coef"),
+					1:100))
+
+keyverb_results_dispersion <- array(
+	NA, dim = c(nlevels(coca_keyverb_data$lemma), 7, 3, 100),
+	dimnames = list(levels(coca_keyverb_data$lemma),
+					c("ADA", "MDA", "JD","RS","CD","KL", "DPn"),
+					c("adac", "othr", "diff"),
+					1:100))
+
+keyverb_results_U_t <- array(
+	NA, dim = c(nlevels(coca_keyverb_data$lemma), 2, 100),
+	dimnames = list(levels(coca_keyverb_data$lemma),
+					c("wicoxon", "t_test"),
+					1:100))
+
+keyverb_results_rates_textlevel <- array(
+	NA, dim = c(nlevels(coca_keyverb_data$lemma), 4, 100),
+	dimnames = list(levels(coca_keyverb_data$lemma),
+					c("rate_acad", "rate_other", "rate_ratio", "rate_diff"),
+					1:100))
+
+# computations
+for(j in 1:100){
+	for(i in 1:nlevels(coca_keyverb_data$lemma)){
+		
+		# select subset
+		subset_texts <- subset(coca_keyverb_texts, random_id == j)
+		subset_texts$acad <- ifelse(subset_texts$genre == "ACAD", 1, 0)
+		subset_texts <- subset_texts[order(subset_texts$text_id),]
+		
+		subset_text_ids <- subset_texts$text_id
+		coca_subset <- subset(coca_keyverb_data, text_id %in% subset_text_ids)
+		
+		# add zero counts
+		coca_subset$text_id <- factor(coca_subset$text_id)
+		coca_subset$lemma <- factor(coca_subset$lemma)
+		
+		coca_subset <- coca_subset[order(coca_subset$text_id),]
+		coca_subset_data <- coca_subset %>% group_by(text_id, lemma, .drop=F) %>% 
+			dplyr::summarize(n_tokens = sum(n_tokens))
+		
+		coca_subset_data <- as.data.frame(coca_subset_data)
+		coca_subset_data <- coca_subset_data[order(coca_subset_data$text_id),]
+		
+		coca_subset_data$year <- subset_texts$year[as.integer(coca_subset_data$text_id)]
+		coca_subset_data$genre <- subset_texts$genre[as.integer(coca_subset_data$text_id)]
+		coca_subset_data$word_count <- subset_texts$word_count[as.integer(coca_subset_data$text_id)]
+		coca_subset_data$acad <- subset_texts$acad[as.integer(coca_subset_data$text_id)]
+		
+		dat0 <- subset(coca_subset_data, lemma==levels(coca_subset_data$lemma)[i])
+
+		# augment data: add a text of 10,000 words with one occurrence
+
+		dat <- data.frame(
+			text_id = factor(c(as.character(dat0$text_id), "999999999", "999999999")),
+			lemma = c(dat0$lemma, dat0$lemma[1:2]),
+			n_tokens = c(dat0$n_tokens, 1, 1),
+			year = c(dat0$year, 0, 0),
+			genre = factor(c(as.character(dat0$genre), "ACAD", "NEWS")),
+			word_count = c(dat0$word_count, 1e4, 1e4),
+			acad = c(dat0$acad, 1, 0)
+		)
+		str(dat)
+		
+		n_texts_acad <- sum(subset_texts$acad) +1
+		n_texts_other <- nrow(subset_texts) - n_texts_acad + 2
+		
+		n_tokens_acad <- sum(subset(subset_texts, acad==1)$word_count) + 1e4
+		n_tokens_other <- sum(subset_texts$word_count) - n_tokens_acad + 2e4
+		
+		x_texts_acad <-  length(unique(subset(dat, acad==1)$text_id))
+		x_texts_other <- length(unique(subset(dat, acad!=1)$text_id))
+		
+		x_tokens_acad <- sum(subset(dat, acad==1)$n_tokens)
+		x_tokens_other <- sum(subset(dat, acad!=1)$n_tokens)
+		
+		keyverb_results_ci[i, 3, 5,j] <-  (x_tokens_acad / (n_tokens_acad - x_tokens_acad)) / (x_tokens_other / (n_tokens_other - x_tokens_other))
+		keyverb_results_ci[i, 3, 6,j] <- ((x_tokens_acad/n_tokens_acad - x_tokens_other/n_tokens_other)*100) / (x_tokens_other/n_tokens_other)
+		keyverb_results_ci[i, 3, 7,j] <- ((x_tokens_acad/n_tokens_acad - x_tokens_other/n_tokens_other)) / ((x_tokens_acad/n_tokens_acad + x_tokens_other/n_tokens_other))
+		
+		
+		tokens_data <- matrix(c(x_tokens_acad,  n_tokens_acad  - x_tokens_acad,
+								x_tokens_other, n_tokens_other - x_tokens_other), 
+								nrow=2, byrow=FALSE)
+		
+		dispersion_data <- matrix(c(x_texts_acad,  n_texts_acad  - x_texts_acad,
+									x_texts_other, n_texts_other - x_texts_other), 
+									nrow=2, byrow=FALSE)
+				
+		# p -- tokens
+		keyverb_results_p[i, 1,1,j] <- g.test(tokens_data)$statistic
+		keyverb_results_p[i, 2,1,j] <- chisq.test(tokens_data)$statistic
+		
+		# p -- text dispersion
+		keyverb_results_p[i, 1,2,j] <- g.test(dispersion_data)$statistic
+		keyverb_results_p[i, 2,2,j] <- chisq.test(dispersion_data)$statistic
+		
+		# ci -- text dispersion
+		keyverb_results_ci[i, 3,3,j] <- x_texts_acad / n_texts_acad
+		keyverb_results_ci[i, c(2,1,4,5),3,j] <- as.numeric(scoreci(x_texts_acad, n_texts_acad, conf.level = c(.5,.9))$conf.int)
+		
+		# ci -- text dispersion difference
+		keyverb_results_ci[i,     3, 4,j] <- (x_texts_acad/n_texts_acad) - (x_texts_other/n_texts_other)
+		keyverb_results_ci[i, c(2,4),4,j] <- as.numeric(diffscoreci(x_texts_acad, n_texts_acad,	x_texts_other, n_texts_other, conf.level = .5)$conf.int)
+		keyverb_results_ci[i, c(1,5),4,j] <- as.numeric(diffscoreci(x_texts_acad, n_texts_acad,	x_texts_other, n_texts_other, conf.level = .9)$conf.int)
+		
+		# ci -- rate difference
+		keyverb_results_ci[i,     3, 1,j] <- (x_tokens_acad/n_tokens_acad) - (x_tokens_other/n_tokens_other)
+		keyverb_results_ci[i, c(2,4),1,j] <- prop.test(x = c(x_tokens_acad,x_tokens_other), n=c(n_tokens_acad, n_tokens_other), conf.level=.50)$conf.int
+		keyverb_results_ci[i, c(1,5),1,j] <- prop.test(x = c(x_tokens_acad,x_tokens_other), n=c(n_tokens_acad, n_tokens_other), conf.level=.90)$conf.int
+
+		#keyverb_results_ci[i, c(2,4),1,j] <- diffscoreci(x_tokens_acad, n_tokens_acad, x_tokens_other, n_tokens_other, conf.level=.50)$conf.int
+		#keyverb_results_ci[i, c(1,5),1,j] <- diffscoreci(x_tokens_acad, n_tokens_acad, x_tokens_other, n_tokens_other, conf.level=.90)$conf.int
+		
+		# ci -- rate ratio
+		keyverb_results_ci[i,     3 ,2,j] <- Prop.ratio(x=c(x_tokens_acad, n_tokens_acad-x_tokens_acad), y=c(x_tokens_other, n_tokens_other - x_tokens_other), conf.level=.95, CImethod="MNScore")$estimate
+		keyverb_results_ci[i, c(2,4),2,j] <- Prop.ratio(x=c(x_tokens_acad, n_tokens_acad-x_tokens_acad), y=c(x_tokens_other, n_tokens_other - x_tokens_other), conf.level=.5, CImethod="MNScore")$conf.int
+		keyverb_results_ci[i, c(1,5),2,j] <- Prop.ratio(x=c(x_tokens_acad, n_tokens_acad-x_tokens_acad), y=c(x_tokens_other, n_tokens_other - x_tokens_other), conf.level=.9, CImethod="MNScore")$conf.int
+
+		
+		# dispersion
+		keyverb_results_dispersion[i,,,j] <- function_keyword_dispersion(dat)
+
+		
+		dat$acad_rev <- factor(ifelse(dat$acad==0, "other", "acad"))
+		dat$rate <- dat$n_tokens / dat$word_count
+		dat_acad <- subset(dat, acad==1)
+		dat_other <- subset(dat, acad==0)	
+		
+		# bag-of-texts model: Rates
+		keyverb_results_rates_textlevel[i,1,j] <- mean(dat_acad$rate)
+		keyverb_results_rates_textlevel[i,2,j] <- mean(dat_other$rate)
+		keyverb_results_rates_textlevel[i,3,j] <- mean(dat_acad$rate)/mean(dat_other$rate)
+		keyverb_results_rates_textlevel[i,4,j] <- mean(dat_acad$rate)-mean(dat_other$rate)
+		
+
+		# Wilcoxon test
+	
+		test_wilcoxon <- wilcox.test(rate ~ acad_rev, data=dat, paired=F, correct=F, conf.int=T, conf.level=.90)
+		
+		keyverb_results_U_t[i,1,j] <- test_wilcoxon$statistic
+
+		# T-test
+		
+		t_test <- t.test(rate ~ acad_rev, data=dat, paired=F, conf.level=.90)
+		keyverb_results_U_t[i,2,j] <- t_test$statistic
+		rm(dat)
+		print(paste("Partition ", j, " / Verb ", i))
+	}
+	}
+
+saveRDS(keyverb_results_p, "./output/results/keyverb_results_p.rds")
+saveRDS(keyverb_results_ci, "./output/results/keyverb_results_ci.rds")
+saveRDS(keyverb_results_dispersion, "./output/results/keyverb_results_dispersion.rds")
+saveRDS(keyverb_results_U_t, "./output/results/keyverb_results_U_t.rds")
+saveRDS(keyverb_results_rates_textlevel, "./output/results/keyverb_results_rates_textlevel.rds")
+
+```

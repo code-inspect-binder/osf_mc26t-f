@@ -1,0 +1,1698 @@
+---
+title: "Script reproducing figures and tables"
+format:
+  html:
+    embed-resources: true
+---
+
+
+### R setup
+
+We start by loading the R packages we need. Note that if you haven't installed these yet, you first need to do so with, e.g., `install.packages("tidyverse")`.
+
+```{r}
+library(tidyverse) # for data wrangling and visualization
+library(lattice)   # for data visualization
+library(gamlss)    # for running negative binomial regression models
+library(here)      # for locating files
+library(dataverse) # for downloading data from TROLLing
+```
+
+
+The file `r_utils.R`, which is located in the folder "R code" of the OSF project, contains some additional functions and code that is mainly relevant for plotting. We therefore run that script using the following command. Note that you will need to change the path to the file. If it is located in the same folder as this script, you would change the path to `source("./my_utils.R")`.
+
+```{r}
+source("C:/Users/ba4rh5/Work Folders/My Files/R projects/my_utils.R")
+```
+
+We also write a function that implements a method for constructing a 95% confidence interval for the difference between two estimates, if only these estimates and their individual 95% CIs are available. The method is described in Newcombe (2013: 132). We will need it to obtain a 95% CI on the difference between standardized dispersion measures (*D~NB~*). The function `mover()` takes 6 arguments:
+
+- p1: point estimate 1 (*D~NB~* for ACAD)
+- p1_lo: lower limit of the 95% CI for p1
+- p1_up: upper limit of the 95% CI for p1
+- p2: point estimate 1 (*D~NB~* for NEWS)
+- p2_lo: lower limit of the 95% CI for p2
+- p2_up: upper limit of the 95% CI for p2
+
+```{r}
+mover <- function(p1, p1_lo, p1_up,
+				  p2, p2_lo, p2_up){
+	diff <- p1 - p2
+	diff_lo <- p1 - p2 - sqrt((p1 - p1_lo)^2 + (p2_up - p2)^2)
+	diff_up <- p1 - p2 + sqrt((p1_up - p1)^2 + (p2 - p2_lo)^2)
+	
+	output <- c(diff, diff_lo, diff_up)
+	names(output) <- c("difference", "upper limit", "lower limit")
+	return(output)
+}
+```
+
+
+
+### Data
+
+We start by loading the data, which are are documented in the following TROLLing post:
+
+- Sönning, Lukas. 2023. Key verbs in academic writing: Dataset for "Evaluation of keyness metrics: Performance and reliability", [https://doi.org/10.18710/EUXSMW](https://doi.org/10.18710/EUXSMW), DataverseNO, V1.
+
+We download the tabular data files directly from TROLLing.
+
+```{r}
+#| warning: false
+#| message: false
+
+verb_lemmas_acad <- get_dataframe_by_doi(
+  filedoi  = "doi:10.18710/EUXSMW/TLVCGL",
+  server   = "dataverse.no",
+  .f       = read.delim,
+  original = TRUE)
+
+verb_lemmas_fict <- get_dataframe_by_doi(
+  filedoi  = "10.18710/EUXSMW/JKUL4N",
+  server   = "dataverse.no",
+  .f       = read.delim,
+  original = TRUE)
+
+COCA_metadata_ACAD_FIC <- get_dataframe_by_doi(
+  filedoi  = "doi:10.18710/EUXSMW/HWK4SD",
+  server   = "dataverse.no",
+  .f       = read.delim,
+  original = TRUE)
+```
+
+We tabulate how often each item occurs in each subcorpus.
+
+```{r}
+acad_token_counts <- verb_lemmas_acad |>
+	group_by(text_id, lemma) |> 
+	dplyr::summarize(
+		n_tokens = n())
+
+fict_token_counts <- verb_lemmas_fict |>
+	group_by(text_id, lemma) |> 
+	dplyr::summarize(
+		n_tokens = n())
+```
+
+
+Next we combine these tabulated frequencies.
+
+```{r}
+coca_keyverb_data <- rbind(
+	acad_token_counts,
+	fict_token_counts
+)
+```
+
+And we add metadata stored in the data frame `COCA_metadata_ACAD_FIC`.
+
+```{r}
+coca_keyverb_data <- merge(
+	coca_keyverb_data,
+	COCA_metadata_ACAD_FIC, 
+	by = "text_id")
+```
+
+Look at the newly created data frame:
+
+```{r}
+str(coca_keyverb_data)
+```
+
+For convenience, we remove the column we won't need (`subgenre`):
+
+```{r}
+coca_keyverb_data_regression <- coca_keyverb_data[,-6]
+```
+
+We also remove lemma dummy code "missing_added".
+
+```{r}
+coca_keyverb_data <- subset(
+	coca_keyverb_data, 
+	lemma != "missing_added")
+```
+
+Check whether there are indeed 700 different verb lemmas:
+
+```{r}
+length(unique(coca_keyverb_data$lemma))
+```
+Look at the finalized data frame:
+
+```{r}
+str(coca_keyverb_data)
+```
+
+
+
+
+
+
+### Figure 1: The meaning of "dispersion"
+
+This code reproduces Figure 1 and saves it as a PDF file, in the folder "figures".
+
+```{r fig.height=3, fig.width=4.25}
+#| fig-width: 3.8
+#| fig-height: 3
+
+set.seed(1985)
+
+n_tokens_A <- c(3,5,4,2,3,4,4,5)
+n_tokens_B <- c(1,0,5,9,0,1,0,2)
+
+n_texts <- length(n_tokens_A)
+
+A_loc <- rep(1:n_texts, n_tokens_A)+runif(sum(n_tokens_A))
+B_loc <- rep((1:n_texts)[n_tokens_B!=0], n_tokens_B[n_tokens_B!=0])+runif(sum(n_tokens_B))
+
+p1 <- xyplot(
+	1~1, type="n", xlim=c(-1,10), ylim=c(-.5,6.5),
+	par.settings=my_settings, scales=list(draw=F), xlab="", ylab="",
+	panel=function(...){
+		panel.segments(x0=(1:(n_texts+1))-1.8, x1=(1:(n_texts+1))-1.8, y0=4.9, y1=5.25, 
+					   col="grey", lwd=.75)
+		panel.rect(xleft=-.8, xright=n_texts-.8, ytop=5.6, ybottom=5.25, 
+				   border="grey",
+				   col="white", lwd=.75)
+		panel.segments(x0=A_loc-1.8,
+					   x1=A_loc-1.8, y0=5.3, y1=5.55, lwd=.75)
+		panel.text(x=(1:n_texts)-1.3, y=5.05, label=n_tokens_A, col="grey50", cex=.8)
+		
+		panel.segments(x0=(1:(n_texts+1))-1.8, x1=(1:(n_texts+1))-1.8, y0=3.4, 
+					   y1=3.75, col="grey", lwd=.75)
+		panel.rect(xleft=-.8, xright=n_texts-.8, ytop=4.1, ybottom=3.75, 
+				   border="grey", col="white", lwd=.75)
+		panel.segments(x0=B_loc - 1.8,
+					   x1=B_loc - 1.8, y0=3.8, y1=4.05, lwd=.75)
+		panel.text(x=(1:n_texts)-1.3, y=3.55, label=n_tokens_B, col="grey50", cex=.8)
+		
+		panel.dotdiagram(1.5+(n_tokens_A/5), y_anchor=1, scale_y=.125, set_cex=1.3)
+		panel.dotdiagram(1.5+(n_tokens_B/5), y_anchor=0, scale_y=.125, set_cex=1.3)
+		panel.segments(x0=1.5, x1=3.7, y0=1, y1=1)
+		panel.segments(x0=1.5, x1=3.7, y0=0, y1=0)
+		panel.segments(x0=1.5+c(0,5,10)/5, x1=1.5+c(0,5,10)/5, y0=1, y1=.925)
+		panel.segments(x0=1.5+c(0,5,10)/5, x1=1.5+c(0,5,10)/5, y0=0, y1=-.075)
+		panel.text(x=1.5+c(0,5,10)/5, y=-.25, label=c(0,5,10), col="grey40", cex=.8)
+		
+		panel.text(x=-.8, y=c(4.5,6)-.1, label=c("Corpus 2", "Corpus 1"), adj=0, cex=.9)
+		panel.text(x=-.8, y=c(0,1)+.2, label=c("Corpus 2", "Corpus 1"), adj=0, cex=.9)
+		
+		panel.text(x=-1.3, y=6.5, adj=0, cex=1, 
+				   label="(a)  Corpus-linguistic sense: Distribution of word tokens in the corpus")
+		panel.text(x=-1.3, y=2, adj=0, cex=1, 
+				   label="(b)  Statistical sense: Distribution of text-level ocurrence rates")
+		
+		
+		panel.text(x=7.7, y=c(3.8, 5.3), adj=0, col=1, lineheight=.85, cex=.85, 
+				   label=c("Lower dispersion\n", "Higher dispersion\n"))
+		panel.text(x=4.7, y=c(0.1 ,1.1), adj=0, col=1, lineheight=.85, cex=.85, 
+				   label=c("Higher dispersion\n", "Lower dispersion\n"))
+		panel.text(x=7.7, y=c(3.8, 5.3), adj=0, col="grey40", lineheight=.85, cex=.85, 
+				   label=c("\n(more concentrated)", "\n(more spread out)"))
+		panel.text(x=4.7, y=c(0.1 ,1.1), adj=0, col="grey40", lineheight=.85, cex=.85, 
+				   label=c("\n(more spread out)", "\n(more concentrated)"))
+		
+		panel.segments(x0=6.2, x1=7.2, y0=5.75, y1=5.75, lwd=.5, col="grey40")
+		panel.segments(x0=c(6.2, 7.2), x1=c(6.2, 7.2), y0=5.75, y1=5.7, 
+					   lwd=.5, col="grey40")
+		panel.text(x=6.7, y=5.9, label="Text", col="grey40", cex=.8)
+		panel.text(x=8.5-1.8, y=3.1, label="Text-level\ntoken count", col="grey40", cex=.8, lineheight=.85)
+		panel.text(x=3.2, y=.6, label="Each dot\ndenotes a text", col="grey40", cex=.8, lineheight=.8)
+		panel.text(x=2.6, y=-.55, label="Number of occurrences", cex=.9, lineheight=.85)
+	})
+p1
+
+cairo_pdf(file = "./figures/fig01_dispersion_terminology.pdf", 
+		  width=4.3, height=3)
+print(p1)
+dev.off()
+```
+
+
+
+
+
+### Figure 2: Illustration ACTUALLY
+
+This code reproduces Figure 2 and saves it as a PDF file, in the folder "figures". We start by loading the data. These are stored in the OSF project, in the folder "example data" [https://osf.io/x3agy](https://osf.io/x3agy). For more information on the dataset, please refer to the following TROLLing post:
+
+- Sönning, Lukas, and Manfred Krug. 2021. Actually in contemporary British speech: Data from the spoken BNC Corpora. [https://doi.org/10.18710/A3SATC](https://doi.org/10.18710/A3SATC). DataverseNO, V1.
+
+Load the data:
+
+```{r}
+actually_data <- read.csv("./data/example_data/actually_data.csv")
+```
+
+Inspect the data frame:
+
+```{r}
+str(actually_data)
+```
+
+There are 668 speakers in total. For each individual, the data frame includes an ID (`speaker`), the number of times they used *actually* (`count`), the total number of words contributed to the corpus by the speaker (`total`), and the usage rate (`rate`), which is a normalized frequency (`count` divided by `total`), here a proportion (i.e. per 1 word). Multiplying `rate` by 1,000 would give us a normalized frequency of "per thousand words".
+
+Add a new variable `rate_ptw` to the data frame, which re-expresses the usage rate as "per thousand words":
+
+```{r}
+actually_data$rate_ptw <- actually_data$rate * 1000
+```
+
+Draw Figure 2:
+
+```{r fig.width=4.5, fig.height=3.25}
+#| fig-width: 4
+#| fig-height: 4
+
+p1 <- actually_data |> 
+	mutate(n_tokens_bins = factor(
+		cut(total, breaks = c(0,1000,5000,20000,400000)))) |> 
+	mutate(n_tokens_bins = fct_rev(n_tokens_bins)) |> 
+	mutate(n_tokens_bins = factor(n_tokens_bins, labels = c(
+		"> 20,000 words", "5,000 - 20,000", "1,000 - 5,000", "< 1,000 words"
+	))) |> 
+	ggplot(aes(x = rate_ptw, 
+			   fill = n_tokens_bins)) +
+	geom_dotplot(method="histodot", binwidth = .1, binpositions="all", 
+				 stroke = .65,
+				 stackgroups=TRUE, stackratio=.95) +
+	scale_fill_manual(values=rev(c("white", "grey70", "grey40", "black"))) + 
+	scale_y_continuous(expand=c( .003, .003)) +
+	scale_x_continuous(breaks=c(0,2,4,6,8), expand=c(.01,.01)) +
+	labs(y = "", fill="Total word count") +
+	xlab("Usage rate of actually (per thousand words)") +
+	theme_dotplot() +
+	theme(legend.key.size = unit(.65,"line"),
+		  legend.title = element_text(size = 10),
+		  legend.position = c(.85, .87)) +
+	annotate("text", x=5, y=.4, label="Each dot represents a speaker\n(n = 668 speakers in total)", color="grey40", size=3.2, lineheight = .85) +
+	annotate("text", x=3.5, y=.85, label="Fill color reflects the\ntotal number of words\ncontributed by the speaker", color="grey40", size=3.2, lineheight = .85)
+
+p1
+
+cairo_pdf(file = "./figures/fig02_occurrence_rate_actually.pdf", 
+		  width=4, height=3.8)
+print(p1)
+dev.off()
+```
+
+
+
+### Model for *actually* in the SpokenBNC2014
+
+We (again) load the data:
+
+```{r}
+actually_data <- read.csv("./data/example_data/actually_data.csv")
+str(actually_data)
+```
+
+We start by fitting a Poisson model using the `{gamlss}` package. A short tutorial showing how to run count binomial regression models using [this R package](https://cran.r-project.org/web/packages/gamlss/index.html) can be found in the folder "R scripts", in the form of an html file "illustration_keyness_regression.html" [https://osf.io/tqchs](https://osf.io/tqchs) or a Quarto notebook "illustration_keyness_regression.Rmd" [https://osf.io/kmyrd](https://osf.io/kmyrd).
+
+```{r}
+m_poi <- gamlss(
+	count ~ 1 + offset(log(total)), 
+	data = actually_data, 
+	family = PO)
+```
+
+Print the model summary:
+
+```{r}
+summary_poi <- summary(m_poi)
+summary_poi
+```
+
+Occurrence rate estimate + 95% CI
+
+```{r}
+# Extract coefficients from model summary
+rate    <- summary_poi[1,1]
+rate_se <- summary_poi[1,2]
+
+# Occurrence rate (per thousand words)
+round(exp(rate)*1000, 2)
+
+# 95% CI
+round(exp(c(rate - 2*rate_se, rate + 2*rate_se))*1000, 2)
+
+```
+
+Next, we fit a negative binomial regression model using the gamlss package.
+
+```{r}
+m_nb2 <- gamlss(
+	count ~ 1 + offset(log(total)), 
+	data = actually_data, 
+	family = NBI)
+```
+
+Print model summary:
+
+```{r}
+summary_nb2 <- summary(m_nb2)
+summary_nb2
+```
+
+
+Occurrence rate estimate + 95% CI
+
+```{r}
+# Extract coefficients from model summary
+log_rate    <- summary_nb2[1,1]
+log_rate_se <- summary_nb2[1,2]
+
+# Occurrence rate (per thousand words)
+round(exp(log_rate)*1000, 2)
+
+# 95% CI
+round(exp(c(log_rate - 2*log_rate_se, log_rate + 2*log_rate_se))*1000, 2)
+
+```
+
+
+And then we transform gamma scale parameter into standardized dispersion measure (*D~NB~*)
+
+```{r}
+log_scale_parameter <- summary_nb2[2,1]
+scale_parameter <- exp(log_scale_parameter)
+
+D_NB <- 1 - exp(-1 / scale_parameter)
+
+round(D_NB, 2)
+```
+
+And next we determine the negative binomial text dispersion (*NB-TD*) for a text of reference length 1,000 words:
+
+```{r}
+NB_TD <- 1 - dNBI(
+	0, 
+	mu = exp(log_rate)*1000, 
+	sigma = scale_parameter)
+
+round(NB_TD, 2)
+```
+
+
+
+### Figure 3: Gamma distribution for *actually* model
+
+This code reproduces Figure 3 and saves it as a PDF file.
+
+```{r fig.width=3, fig.height=1.5}
+x_lim = 3.1
+p1 <- xyplot(
+  1~1, type="n", xlim=c(0, x_lim), ylim=c(0,1.2),
+  par.settings=my_settings, axis=axis_L,
+  scales=list(y=list(at=0), x=list(at=c(0,1,2,3))),
+  ylab="Density", xlab="Relative deviation from sample mean (factors)",
+  panel=function(x,y){
+  	panel.polygon(x=c(seq(0, x_lim, length.out=100), x_lim),
+  				  y=c(dGA(seq(0, x_lim, length.out=100), 
+  				  	  mu=1, sigma=(scale_parameter)), 0), 
+  				  col="grey", alpha=.5, border=F)
+  	panel.abline(v=1, col=1)
+    panel.points(x=seq(0, x_lim, length.out=500), col=1, 
+                 y=dGA(seq(0, x_lim, length.out=500), 
+                 	  mu=1, sigma=(scale_parameter)), type="l")
+    panel.abline(h=0)
+    })
+p1
+
+cairo_pdf(file = "./figures/fig03_gamma_distribution_actually.pdf", 
+		  width=2.8, height=1.2)
+print(p1)
+dev.off()
+
+
+```
+
+
+
+### Figure 4: Interpreting the Gamma scale parameter: Translation to dispersion measure
+
+This code reproduces Figure 4 (in the preprint) and saves it as a PDF file,
+
+
+```{r fig.height=1.5, fig.width=4}
+x_seq <- seq(0,4,.1)
+
+p1 <- xyplot(1~1, type="n", xlim=c(0, 10.3), ylim=c(1.8, .3),
+	   par.settings=my_settings,
+	   scales=list(draw=F), xlab=NULL, ylab=NULL,
+	   panel=function(x,y){
+	   	panel.rect(xleft=0, xright=10.3, ytop=1.1, ybottom=1, border=F, fill="grey95")
+	   	panel.rect(xleft=0, xright=10.15 , ytop=1.1, ybottom=1, border=F, fill="grey85")
+	   	panel.rect(xleft=0, xright=10, ytop=1.1, ybottom=1, border=F, fill="grey75")
+	   	
+	   	panel.segments(x0=0, x1=10.3, y0=1.1, y1=1.1, col="grey80")
+	   	panel.segments(x0=0, x1=10.15 , y0=1.1, y1=1.1, col="grey50")
+	   	panel.segments(x0=0, x1=10, y0=1.1, y1=1.1, col=1)
+	   	
+	   	panel.segments(x0=0, x1=10.3, y0=1, y1=1, col="grey80")
+	   	panel.segments(x0=0, x1=10.15 , y0=1, y1=1, col="grey50")
+	   	panel.segments(x0=0, x1=10, y0=1, y1=1, col=1)
+	   	
+	   	panel.text(x=seq(0, 10, 1), y=1.3, label=seq(0, 10, 1), cex=.95)
+
+	   	panel.segments(x0= 0, x1= 0,
+	   				   y0=1, y1=1.1)
+	   	
+	   	panel.segments(x0= seq(0, 10, 1), x1= seq(0, 10, 1),
+	   				   y0=1.1, y1=1.18)
+	   	panel.segments(x0= seq(.5, 9.5, .5), x1= seq(.5, 9.5, .5),
+	   				   y0=1.1, y1=1.14)
+	   	
+	   	panel.text(x = 1/(-log(1 - c(1, .9, .7, .5, .4, .3, .2, .1))), y=.81, 
+	   			   label=c("1", numformat(c(.9, .7, .5, .4, .3, .2, .1))), cex=.95)
+	   	
+	   	panel.segments(x0= 1/(-log(1 - seq(1, .1, -.1))),
+	   				   x1= 1/(-log(1 - seq(1, .1, -.1))),
+	   				   y0=1, y1=.92)
+	   	panel.segments(x0= 1/(-log(1 - seq(.95, .05, -.05))),
+	   				   x1= 1/(-log(1 - seq(.95, .05, -.05))),
+	   				   y0=1, y1=.96)
+	   	
+
+	   	panel.text(x=5.5, y=1.6, label="Gamma scale parameter", cex=1.05)
+	   	panel.text(x=5.5, y=.5, label=expression(Dispersion~measure~~italic(D[NB])), cex=1.05)
+	   })
+
+p1
+
+cairo_pdf(file = "./figures/fig04_translate_scale_to_dispersion.pdf", 
+		  width=4.5, height=1.4)
+p1
+dev.off()
+```
+
+
+
+
+### Table 2: Keyness metrics based on the NBRM for the verb lemma DEFINE
+
+Please refer to section "Model for DEFINE" in the html file "illustration_keyness_regression.html" [https://osf.io/tqchs](https://osf.io/tqchs) or the Quarto notebook "illustration_keyness_regression.qmd" [https://osf.io/kmyrd](https://osf.io/kmyrd), both of which can be found in the folder "R scripts" in the OSF project.
+
+
+
+
+### Application to key verb analysis
+
+We now illustrate the use of count regression to find key verbs (lemmas) in academic writing. The data were read in above (see section "Data"). The following code will loop through the data set verb by verb. There are 700 verb lemmas in total, so the loop will repeat the same procedure once for each verb, i.e. 700 times. 
+
+For each verb, we will fit a negative binomial regression model of location and scale and extract from it the relevant coefficients, which we need in order to construct keyness indicators. Keyness measures will be computed in a second step further below. The code block includes some explanatory comments. For more detailed explanations of the individual steps for doing so, please refer to relevant files in the folder "R scripts" in the OSF project.
+
+We start by setting up an array `keyverb_regression_results`, which we will use to store the coefficients. This array has four dimensions:
+
+- [1] 700 slots, one for each verb lemma in the data.
+- [2] 2 slots, one for the usage rate coefficient, one for the gamma scale parameter
+- [3] 3 slots, one for ACAD, one for FIC, and one for the difference between these genres
+- [4] 2 slots, one for the point estimate, one for its standard error
+
+```{r}
+keyverb_regression_results <- array(
+	NA, 
+	dim=c(700, 2, 3, 2),
+	dimnames = list(
+		sort(unique(coca_keyverb_data$lemma)),
+		c("log rate", "log shape"),
+		c("ACAD", "FIC", "difference"),
+		c("est", "se")
+	))
+```
+
+We will only use data from the years 2018 and 2019, so we select this subset from the data frame:
+
+```{r}
+coca_keyverb_data_subset <- subset(
+	coca_keyverb_data, 
+	year %in% c(2018, 2019))
+
+coca_keyverb_texts_subset <- subset(
+	COCA_metadata_ACAD_FIC, 
+	year %in% c(2018, 2019))
+
+```
+
+
+To extract coefficients from the models we fit, we use a modified `summary()` function, which does not print out the summary table. To load this modified function, run the following code:
+
+```{r}
+source(
+	here(
+		"r_utils",
+		"gamlss.summary.no.printout.R"))
+```
+
+
+Here is the loop. Note that it takes about 3 minutes to run.
+
+```{r eval = F}
+for(i in 1:700){
+	
+	# select data for verb i, store as a new object "verb_data"
+	
+	verb_data <- subset(
+		coca_keyverb_data_subset, 
+		lemma == sort(unique(coca_keyverb_data$lemma))[i])
+	
+	# drop the columns we don't need
+	
+	verb_data <- verb_data[,-c(2,6,8)]
+	
+	# In the data frame "coca_keyverb_data_regression", only texts that show at
+	# least one occurrence of the verb lemma are listed. This means that those
+	# texts in which the lemma did not occur are not included.
+	# We therefore now need to add these texts to the data frame "verb_data".
+	# The data frame "coca_keyverb_texts_regression" lists all text files in 
+	# the corpus. By comparing the data frames "coca_keyverb_data_regression"
+	# and "coca_keyverb_texts_regression", we can detect those items which are 
+	# missing in "coca_keyverb_data_regression", i.e. the texts in which the 
+	# verb lemma does not occur. This is what the following code chunk does:
+	
+	data_to_add <- coca_keyverb_texts_subset[!(coca_keyverb_texts_subset$text_id %in% verb_data$text_id),]
+	
+	# drop the columns we don't need
+	
+	data_to_add <- data_to_add[,-c(4,6)]
+	
+	# We now reformat the object "data_to_add" slightly to be able to combine
+	# it with the object "verb_data". The two must have the same columns, in
+	# the same order.
+	
+	data_to_add <- data.frame(
+		text_id = data_to_add[,1],
+		n_tokens = 0,
+		year = data_to_add[,2],
+		genre = data_to_add[,3],
+		word_count = data_to_add[,4]
+	)
+	
+	data_to_add$n_tokens <- as.integer(data_to_add$n_tokens)
+	
+	# We can now combine the two data frames:
+	
+	verb_data <- rbind(verb_data, data_to_add)
+	
+
+	# Add an indicator variable ("1" = ACAD, "0" = FIC):
+	
+	verb_data$acad <- ifelse(verb_data$genre == "ACAD", 1, 0)
+	
+	
+	# Augment data. To avoid the regression results to suffer from sparse data bias, 
+	# we add two imaginary texts to each genre (i.e. 4 texts in total): 
+	#    (i) a 10,000-word text with one occurrence of the item in question, and 
+	#   (ii) a 20,000-word text with two occurrences of the item
+	
+	verb_data <- rbind(
+		verb_data,
+		data.frame(
+			text_id = rep(9999999, 4),
+			n_tokens = c(1,2,1,2),
+			year = rep(2019, 4),
+			genre = c("FIC", "FIC", "ACAD", "ACAD"),
+			word_count = c(1e4, 2e4, 1e4, 2e4),
+			acad = c(0,0,1,1)
+		))
+	
+	# Create two subsets of the data
+
+	data_acad <- subset(verb_data, acad == 1)
+	data_fict <- subset(verb_data, acad == 0)
+	
+	
+	# The data are now ready for modeling. 
+	
+	# The negative binomial regression model of location and scale requires  
+	# sufficient information in the data to be estimable. For problematic
+	# data situations, the model does not converge and we therefore don't get
+	# (interpretable) estimates. If this happens for a specific verb lemma in 
+	# data set, we want the loop to skip the problematic item and continue with
+	# the next one in line. We therefore add to our loop the tryCatch function,
+	# which makes sure that the loop does not quit upon an error message, but
+	# continues its work.
+	
+	skip_to_next <- FALSE
+	
+	tryCatch({
+		
+		# We fit three models:
+		#   m_acad for the ACAD data
+		#   m_fict for the FIC data
+		#   m_comp to compare the two genres
+		
+		m_acad <- gamlss(
+			n_tokens ~ 1 + offset(log(word_count)), 
+			sigma.formula = ~ 1, 
+			data = data_acad, 
+			family = NBI, 
+			control = gamlss.control(
+				c.crit = .01,
+				trace = FALSE))
+		
+		m_fict <- gamlss(
+			n_tokens ~ 1 + offset(log(word_count)), 
+			sigma.formula = ~ 1, 
+			data = data_fict, 
+			family = NBI, 
+			control = gamlss.control(
+				c.crit = .02,
+				trace = FALSE))
+		
+		m_comp <- gamlss(
+			n_tokens ~ acad + offset(log(word_count)), 
+			sigma.formula = ~ acad, 
+			data = verb_data, 
+			family = NBI, 
+			control = gamlss.control(
+				c.crit = .01,
+				trace = FALSE))
+		
+		# Extract coefficients from the model using a modified function that
+		# does not print any message
+		
+		summary_acad <- summary.gamlss.no.printout(m_acad, robust = TRUE)
+		summary_fict <- summary.gamlss.no.printout(m_fict, robust = TRUE)
+		summary_comp <- summary.gamlss.no.printout(m_comp, robust = TRUE)
+		
+		
+		# Now we enter the estimates into our array "keyverb_regression_results"
+
+		# Estimates for the usage rate
+
+		keyverb_regression_results[i,1,1,1] <- summary_acad[1,1] # log rate, ACAD
+		keyverb_regression_results[i,1,2,1] <- summary_fict[1,1] # log rate, FIC
+		keyverb_regression_results[i,1,1,2] <- summary_acad[1,2] # log rate, SE, ACAD
+		keyverb_regression_results[i,1,2,2] <- summary_fict[1,2] # log rate, SE, FIC
+		keyverb_regression_results[i,1,3,1] <- summary_comp[2,1] # log rate ratio
+		keyverb_regression_results[i,1,3,2] <- summary_comp[2,2] # log rate ratio, SE
+		
+		
+		# Estimates for the variability of usage rates across speakers
+		
+		keyverb_regression_results[i,2,1,1] <- summary_acad[2,1] # log scale, ACAD
+		keyverb_regression_results[i,2,2,1] <- summary_fict[2,1] # log scale, FIC
+		keyverb_regression_results[i,2,1,2] <- summary_acad[2,2] # log scale, SE, ACAD
+		keyverb_regression_results[i,2,2,2] <- summary_fict[2,2] # log scale, SE, FIC
+		keyverb_regression_results[i,2,3,1] <- summary_comp[4,1] # log scale ratio
+		keyverb_regression_results[i,2,3,2] <- summary_comp[4,2] # log scale ratio, SE
+		},
+		
+		error = function(e) { skip_to_next <<- TRUE})
+	
+	# Remove objects created for this specific verb lemma
+	
+	rm(verb_data, data_to_add, 
+	   m_acad, m_fict, m_comp,
+	   summary_acad, summary_fict, summary_comp)
+	
+	
+	# Print "i" to monitor progress
+	
+	print(paste0("Progress: Verb ", i, " (of 700)"))
+}
+
+# We save the array as an RDS file
+
+saveRDS(
+	keyverb_regression_results, 
+	here("results",
+		 "keyverb_regression_results.rds"))
+
+```
+
+
+Let us first look whether there were any verb lemmas in our data for which a model could not be fit. We start by reading in the array that stores the regression coefficients for the 700 verb lemmas:
+
+```{r}
+keyverb_regression_results <- readRDS(
+	here("results",
+	"keyverb_regression_results.rds"))
+```
+
+If a model did not converge, the entry in the array for its estimates is "NA". We therefore count the number of NAs in the array:
+
+```{r}
+sum(is.na(keyverb_regression_results[,1,1,1]))	# log rate, ACAD
+sum(is.na(keyverb_regression_results[,1,2,1]))	# log rate, NEWS
+sum(is.na(keyverb_regression_results[,1,3,1]))	# log rate ratio
+
+sum(is.na(keyverb_regression_results[,2,1,1]))	# log shape, ACAD
+sum(is.na(keyverb_regression_results[,2,2,1]))	# log shape, NEWS
+sum(is.na(keyverb_regression_results[,2,3,1]))	# log shape ratio
+```
+
+There are none. Let us also look at the distribution of different coefficients to spot unreliable estimates: 
+
+```{r}
+#| fig-width: 3
+#| fig-height: 1.5
+
+histogram(
+	keyverb_regression_results[,1,1,1], 
+	nint=100, col="grey", 
+	main="Log rate, ACAD", 
+	par.settings=my_settings, axis=axis_bottom,
+	xlab="Estimate", ylab="")
+```
+
+
+```{r}
+#| fig-width: 3
+#| fig-height: 1.5
+ 
+histogram(
+	keyverb_regression_results[,1,2,1], 
+	nint=100, col="grey", 
+	main="Log rate, FIC", 
+	par.settings=my_settings, axis=axis_bottom,
+	xlab="Estimate", ylab="")
+```
+
+```{r}
+#| fig-width: 3
+#| fig-height: 1.5
+
+histogram(
+	keyverb_regression_results[,1,3,1], 
+	nint=100, col="grey", 
+	main="Log rate ratio", 
+	par.settings=my_settings, axis=axis_bottom,
+	xlab="Estimate", ylab="")
+```
+
+```{r}
+#| fig-width: 3
+#| fig-height: 1.5
+
+histogram(
+	keyverb_regression_results[,2,1,1], 
+	nint=100, col="grey", 
+	main="Log scale, ACAD", 
+	par.settings=my_settings, axis=axis_bottom,
+	xlab="Estimate", ylab="")
+```
+
+
+```{r}
+#| fig-width: 3
+#| fig-height: 1.5
+
+histogram(
+	keyverb_regression_results[,2,2,1], 
+	nint=100, col="grey", 
+	main="Log scale, FIC", 
+	par.settings=my_settings, axis=axis_bottom,
+	xlab="Estimate", ylab="")
+```
+
+```{r}
+#| fig-width: 3
+#| fig-height: 1.5
+
+histogram(
+	keyverb_regression_results[,2,3,1], 
+	nint=100, col="grey", 
+	main="Log scale ratio", 
+	par.settings=my_settings, axis=axis_bottom,
+	xlab="Estimate", ylab="")
+```
+
+
+
+```{r}
+#| fig-width: 3
+#| fig-height: 1.5
+
+histogram(
+	keyverb_regression_results[,1,1,2], 
+	nint=100, col="grey", 
+	main="Log rate, ACAD, standard error", 
+	par.settings=my_settings, axis=axis_bottom,
+	xlab="Estimate", ylab="")
+```
+
+
+```{r}
+#| fig-width: 3
+#| fig-height: 1.5
+
+histogram(
+	keyverb_regression_results[,1,2,2], 
+	nint=100, col="grey", 
+	main="Log rate, FIC, standard error", 
+	par.settings=my_settings, axis=axis_bottom,
+	xlab="Estimate", ylab="")
+```
+
+```{r}
+#| fig-width: 3
+#| fig-height: 1.5
+
+histogram(
+	keyverb_regression_results[,1,3,2], 
+	nint=100, col="grey", 
+	main="Log rate ratio, standard error", 
+	par.settings=my_settings, axis=axis_bottom,
+	xlab="Estimate", ylab="")
+```
+
+```{r}
+#| fig-width: 3
+#| fig-height: 1.5
+
+histogram(
+	keyverb_regression_results[,2,1,2], 
+	nint=100, col="grey", 
+	main="Log scale, ACAD, standard error", 
+	par.settings=my_settings, axis=axis_bottom,
+	xlab="Estimate", ylab="")
+```
+
+
+```{r}
+#| fig-width: 3
+#| fig-height: 1.5
+
+histogram(
+	keyverb_regression_results[,2,2,2],
+	nint=100, col="grey", 
+	main="Log scale, FIC, standard error", 
+	par.settings=my_settings, axis=axis_bottom,
+	xlab="Estimate", ylab="")
+```
+
+```{r}
+#| fig-width: 3
+#| fig-height: 1.5
+
+histogram(
+	keyverb_regression_results[,2,3,2],
+	nint=100, col="grey", 
+	main="Log scale ratio, standard error", 
+	par.settings=my_settings, axis=axis_bottom,
+	xlab="Estimate", ylab="")
+```
+```{r}
+str(keyverb_regression_results)
+```
+
+
+
+```{r}
+keyverb_regression_results <- readRDS(
+	here("results",
+		 "keyverb_regression_results.rds"))
+
+keyverb_regression_summary <- array(
+	NA, 
+	dim=c(700, 12, 3), 
+	dimnames = list(
+		dimnames(keyverb_regression_results)[[1]],
+		c("rate_ACAD", "rate_FIC", "rate_ratio",
+		  "scale_ACAD", "scale_FIC", "scale_ratio",
+		  "disp_ACAD", "disp_FIC", "disp_diff",
+		  "NB_TD_ACAD", "NB_TD_FIC", "NB_TD_diff"),
+		c("estimate", "lower_ci", "upper_ci")))
+
+
+# rate ACAD (pmw)
+keyverb_regression_summary[,1,1] <- exp(keyverb_regression_results[,1,1,1])
+keyverb_regression_summary[,1,2] <- exp(keyverb_regression_results[,1,1,1] - 2*keyverb_regression_results[,1,1,2])
+keyverb_regression_summary[,1,3] <- exp(keyverb_regression_results[,1,1,1] + 2*keyverb_regression_results[,1,1,2])
+
+# rate FIC (pmw)
+keyverb_regression_summary[,2,1] <- exp(keyverb_regression_results[,1,2,1])
+keyverb_regression_summary[,2,2] <- exp(keyverb_regression_results[,1,2,1] - 2*keyverb_regression_results[,1,2,2])
+keyverb_regression_summary[,2,3] <- exp(keyverb_regression_results[,1,2,1] + 2*keyverb_regression_results[,1,2,2])
+
+# rate ratio
+keyverb_regression_summary[,3,1] <- exp(keyverb_regression_results[,1,3,1])
+keyverb_regression_summary[,3,2] <- exp(keyverb_regression_results[,1,3,1] - 2*keyverb_regression_results[,1,3,2])
+keyverb_regression_summary[,3,3] <- exp(keyverb_regression_results[,1,3,1] + 2*keyverb_regression_results[,1,3,2])
+
+
+
+# scale ACAD (pmw)
+keyverb_regression_summary[,4,1] <- exp(keyverb_regression_results[,2,1,1])
+keyverb_regression_summary[,4,2] <- exp(keyverb_regression_results[,2,1,1] - 2*keyverb_regression_results[,2,1,2])
+keyverb_regression_summary[,4,3] <- exp(keyverb_regression_results[,2,1,1] + 2*keyverb_regression_results[,2,1,2])
+
+# scale FIC (pmw)
+keyverb_regression_summary[,5,1] <- exp(keyverb_regression_results[,2,2,1])
+keyverb_regression_summary[,5,2] <- exp(keyverb_regression_results[,2,2,1] - 2*keyverb_regression_results[,2,2,2])
+keyverb_regression_summary[,5,3] <- exp(keyverb_regression_results[,2,2,1] + 2*keyverb_regression_results[,2,2,2])
+
+# scale ratio
+keyverb_regression_summary[,6,1] <- exp(keyverb_regression_results[,2,3,1])
+keyverb_regression_summary[,6,2] <- exp(keyverb_regression_results[,2,3,1] - 2*keyverb_regression_results[,2,3,2])
+keyverb_regression_summary[,6,3] <- exp(keyverb_regression_results[,2,3,1] + 2*keyverb_regression_results[,2,3,2])
+
+
+# dispersion ACAD 
+keyverb_regression_summary[,7,1] <- 1-exp(-1/exp(keyverb_regression_results[,2,1,1]))
+keyverb_regression_summary[,7,2] <- 1-exp(-1/exp(keyverb_regression_results[,2,1,1] - 2*keyverb_regression_results[,2,1,2]))
+keyverb_regression_summary[,7,3] <- 1-exp(-1/exp(keyverb_regression_results[,2,1,1] + 2*keyverb_regression_results[,2,1,2]))
+
+# dispersion FIC 
+keyverb_regression_summary[,8,1] <- 1-exp(-1/exp(keyverb_regression_results[,2,2,1]))
+keyverb_regression_summary[,8,2] <- 1-exp(-1/exp(keyverb_regression_results[,2,2,1] - 2*keyverb_regression_results[,2,2,2]))
+keyverb_regression_summary[,8,3] <- 1-exp(-1/exp(keyverb_regression_results[,2,2,1] + 2*keyverb_regression_results[,2,2,2]))
+
+# dispersion difference
+keyverb_regression_summary[,9,1] <- keyverb_regression_summary[,7,1] - keyverb_regression_summary[,8,1]
+
+for(i in 1:700){
+	keyverb_regression_summary[i,9,2:3] <- mover(
+		keyverb_regression_summary[i,7,1],
+		keyverb_regression_summary[i,7,2],
+		keyverb_regression_summary[i,7,3],
+		keyverb_regression_summary[i,8,1],
+		keyverb_regression_summary[i,8,2],
+		keyverb_regression_summary[i,8,3])[2:3]
+}
+
+
+
+# NB-TD
+
+for(i in 1:700){
+	keyverb_regression_summary[i,10,1] <- ifelse(
+		is.na(keyverb_regression_summary[i,1,1]) | is.na(keyverb_regression_summary[i,4,1]) | keyverb_regression_summary[i,1,1] <= 0 | keyverb_regression_summary[i,4,1] <= 0, 
+		NA,
+		1 - dNBI(0, mu=keyverb_regression_summary[i,1,1]*1e4, sigma=ifelse(keyverb_regression_summary[i,4,1] <= 0, 2.473579e-16, keyverb_regression_summary[i,4,1])))
+	
+	keyverb_regression_summary[i,10,2] <- ifelse(
+		is.na(keyverb_regression_summary[i,1,2]) | is.na(keyverb_regression_summary[i,4,3]) | keyverb_regression_summary[i,1,2] <= 0 | keyverb_regression_summary[i,4,3] <= 0, 
+		NA,
+		1 - dNBI(0, mu=keyverb_regression_summary[i,1,2]*1e4, sigma=ifelse(keyverb_regression_summary[i,4,3] <= 0, 2.473579e-16, keyverb_regression_summary[i,4,3])))
+	
+	keyverb_regression_summary[i,10,3] <- ifelse(
+		is.na(keyverb_regression_summary[i,1,3]) | is.na(keyverb_regression_summary[i,4,2]) | keyverb_regression_summary[i,1,3] <= 0 | keyverb_regression_summary[i,4,2] <= 0, 
+		NA,
+		1 - dNBI(0, mu=keyverb_regression_summary[i,1,3]*1e4, sigma=ifelse(keyverb_regression_summary[i,4,2] <= 0, 2.473579e-16, keyverb_regression_summary[i,4,2])))
+	
+	
+	keyverb_regression_summary[i,11,1] <- ifelse(
+		is.na(keyverb_regression_summary[i,2,1]) | is.na(keyverb_regression_summary[i,5,1]) | keyverb_regression_summary[i,2,1] <= 0 | keyverb_regression_summary[i,5,1] <= 0, 
+		NA,
+		1 - dNBI(0, mu=keyverb_regression_summary[i,2,1]*1e4, sigma=ifelse(keyverb_regression_summary[i,5,1] <= 0, 2.473579e-16, keyverb_regression_summary[i,5,1])))
+	
+	keyverb_regression_summary[i,11,2] <- ifelse(
+		is.na(keyverb_regression_summary[i,2,2]) | is.na(keyverb_regression_summary[i,5,3]) | keyverb_regression_summary[i,2,2] <= 0 | keyverb_regression_summary[i,5,3] <= 0, 
+		NA,
+		1 - dNBI(0, mu=keyverb_regression_summary[i,2,2]*1e4, sigma=ifelse(keyverb_regression_summary[i,5,3] <= 0, 2.473579e-16, keyverb_regression_summary[i,5,3])))
+	
+	keyverb_regression_summary[i,11,3] <- ifelse(
+		is.na(keyverb_regression_summary[i,2,3]) | is.na(keyverb_regression_summary[i,5,2]) | keyverb_regression_summary[i,2,3] <= 0 | keyverb_regression_summary[i,5,2] <= 0, 
+		NA,
+		1 - dNBI(0, mu=keyverb_regression_summary[i,2,3]*1e4, sigma=ifelse(keyverb_regression_summary[i,5,2] <= 0, 2.473579e-16, keyverb_regression_summary[i,5,2])))
+}
+
+
+
+keyverb_regression_summary[,12,1] <- keyverb_regression_summary[,10,1] - keyverb_regression_summary[,11,1]
+
+# add confidence interval for the difference using the square-and-add approach (Newcombe 2013: 133)
+
+keyverb_regression_summary[,12,2] <- keyverb_regression_summary[,12,1] - 
+	sqrt((keyverb_regression_summary[,10,1] - keyverb_regression_summary[,10,2])^2 + (keyverb_regression_summary[,11,3] - keyverb_regression_summary[,11,1])^2)
+
+keyverb_regression_summary[,12,3] <- keyverb_regression_summary[,12,1] + 
+	sqrt((keyverb_regression_summary[,10,3] - keyverb_regression_summary[,10,1])^2 + (keyverb_regression_summary[,11,1] - keyverb_regression_summary[,11,2])^2)
+
+
+```
+
+
+Let us again look at the distribution of these keyness indicators: 
+
+c("rate_ACAD", "rate_FIC", "rate_ratio",
+		  "scale_ACAD", "scale_FIC", "scale_ratio",
+		  "disp_ACAD", "disp_FIC", "disp_diff",
+		  "D_NB_ACAD", "D_NB_FIC", "D_NB_diff"),
+		  
+```{r}
+#| fig-width: 3
+#| fig-height: 1.5
+
+histogram(
+	keyverb_regression_summary[,7,1], 
+	nint=100, col="grey",
+	main="D_NB, ACAD", 
+	par.settings=my_settings, axis=axis_bottom,
+	xlab="Estimate", ylab="")
+```
+
+
+```{r}
+#| fig-width: 3
+#| fig-height: 1.5
+
+histogram(
+	keyverb_regression_summary[,8,1], 
+	nint=100, col="grey",
+	main="D_NB, FIC", 
+	par.settings=my_settings, axis=axis_bottom,
+	xlab="Estimate", ylab="")
+```
+
+
+```{r}
+#| fig-width: 3
+#| fig-height: 1.5
+
+histogram(
+	keyverb_regression_summary[,9,1], 
+	nint=100, col="grey",
+	main="D_NB difference", 
+	par.settings=my_settings, axis=axis_bottom,
+	xlab="Estimate", ylab="")
+```
+
+
+```{r}
+#| fig-width: 3
+#| fig-height: 1.5
+
+histogram(
+	keyverb_regression_summary[,10,1], 
+	nint=100, col="grey",
+	main="NB_TD, ACAD", 
+	par.settings=my_settings, axis=axis_bottom,
+	xlab="Estimate", ylab="")
+```
+
+
+```{r}
+#| fig-width: 3
+#| fig-height: 1.5
+
+histogram(
+	keyverb_regression_summary[,11,1], 
+	nint=100, col="grey",
+	main="NB_TD, FIC", 
+	par.settings=my_settings, axis=axis_bottom,
+	xlab="Estimate", ylab="")
+```
+
+
+```{r}
+#| fig-width: 3
+#| fig-height: 1.5
+
+histogram(
+	keyverb_regression_summary[,12,1], 
+	nint=100, col="grey",
+	main="NB_TD difference", 
+	par.settings=my_settings, axis=axis_bottom,
+	xlab="Estimate", ylab="")
+```
+
+
+
+
+
+
+
+
+### Figure 5: Keyness profiles for top 30 items 
+
+```{r fig.width=4, fig.height=5}
+# weight dimension for ranking
+
+verb_ranking <- rank(
+	(.25*rank(-keyverb_regression_summary[,1,1], na.last = T, ties.method = "average") +  # rate 
+	 	.25*rank(-keyverb_regression_summary[,3,1], na.last = T, ties.method = "average") +  # rate ratio
+	 	.25*rank(-keyverb_regression_summary[,7,1], na.last = T, ties.method = "average") +  # D_NB
+	 	.25*rank(-keyverb_regression_summary[,9,1], na.last = T, ties.method = "average")), ties.method = "random") # D_NB diff
+
+
+
+# Distinctiveness (rate ratio) -------------------------------------------------
+
+data_irr <- keyverb_regression_summary[,3,1:3] %>% 
+	as_tibble() %>% 
+	mutate(lemma = dimnames(keyverb_regression_summary[,3,1:3])[[1]],
+		   rate_ratio = (estimate),
+		   verb_ranking = verb_ranking) %>% 
+	mutate(lemma = fct_reorder(lemma, -verb_ranking)) %>% 
+	filter(verb_ranking <= 30) 
+
+data_irr <- data_irr[order(data_irr$verb_ranking),]
+max_x <- (max(data_irr$upper_ci))
+
+data_irr$right_limit <- 1e5
+
+data_shading <- data.frame(
+		x1=rep(1, 15), 
+		x2=rep(max_x, 15), 
+		y1=seq(2,31,2)-.5, 
+		y2=seq(3,32,2)-.5)
+
+
+p_irr <- ggplot() + 
+	geom_rect(data=data_shading,
+			  aes(xmin=x1, xmax=x2, ymin=y1, ymax=y2), fill="grey90") + 
+	geom_vline(xintercept=1) +
+	geom_point(data=data_irr, aes(x=rate_ratio, y=lemma), size=1) +
+	geom_point(data=subset(data_irr, rate_ratio >= 100),
+			   aes(x=right_limit, y=lemma), shape=21, fill="white") +
+	geom_linerange(data=subset(data_irr, rate_ratio <= (100)),
+				   aes(y=lemma, xmin=(lower_ci), xmax=(upper_ci))) +
+	ylab(NULL) + xlab("Rate ratio (log-scaled)") +
+	scale_x_log10(breaks=c(1,10,100,1000,10000, 100000),
+				  labels=c(1,10,100,"1k","10k", "100k"),
+				  limits = c(1, max_x),
+				  expand=c(0,0),
+				  minor_breaks=c(2:9, seq(20,90,10),
+				  			   seq(200,900,100),
+				  			   seq(2000,9000,1000),
+				  			   seq(20000,90000,10000))) +
+	scale_y_discrete(labels=rev(data_irr$lemma)) +
+#	coord_cartesian(xlim=c(1, min(c(100, max_x)))) +
+	ggtitle(label = "\nDistinctiveness") +
+	theme_minimal() +
+	theme(plot.title = element_text(size=10, hjust = 0.5),
+		  axis.text.y = element_text(face="italic"),
+		  axis.title.x = element_text(size=10),
+		  panel.grid.major.y = element_blank())
+
+# Discernibility (occurrence rate) ---------------------------------------------
+
+data_rate <-  keyverb_regression_summary[,1,1:3] %>% 
+	as_tibble() %>% 
+	mutate(lemma = dimnames(keyverb_regression_summary[,1,1:3])[[1]],
+		   verb_ranking = verb_ranking) %>% 
+	mutate(lemma = fct_reorder(lemma, -verb_ranking)) %>% 
+	filter(verb_ranking <= 30)
+
+data_rate <- data_rate[order(data_rate$verb_ranking),]
+
+data_shading <- data.frame(
+		x1=rep(min(data_rate$lower_ci)*1e4, 15), 
+		x2=rep(max(data_rate$upper_ci)*1e4, 15), 
+		y1=seq(2,31,2)-.5, 
+		y2=seq(3,32,2)-.5)
+
+p_rate <- ggplot() + 
+	geom_rect(data=data_shading,
+			  aes(xmin=x1, xmax=x2, ymin=y1, ymax=y2), fill="grey90") + 
+	geom_point(data=data_rate, aes(x=estimate*1e4, y=lemma), size=1) +
+	geom_linerange(data=data_rate, aes(y=lemma, xmin=(lower_ci*1e4), xmax=(upper_ci*1e4))) +
+	ylab(NULL) + xlab("Rate (pttw, log-scaled)") +
+	scale_y_discrete(labels=NULL) +
+	geom_vline(xintercept=1) +
+	scale_x_log10(breaks=c(.01,.03,.1,1,3,10,30,100),
+				  labels=c(.01,.03,.1,1,3,10,30,100),
+				  expand=c(0,0),
+				  minor_breaks=c(seq(.002, .009, .001),
+				  			   seq(.02, .09, .01),
+				  			   seq(.2,.9,.1),
+				  			   2:9, seq(20,90,10),
+				  			   seq(200,900,100))) +
+	ggtitle(label = "\nDiscernibility") +
+	theme_minimal() +
+	theme(plot.title = element_text(size=10, hjust = 0.5),
+		  axis.title.x = element_text(size=10),
+		  panel.grid.major.y = element_blank())
+
+
+# Generality (dispersion) ------------------------------------------------------
+
+data_disp <- keyverb_regression_summary[,7,1:3] %>% 
+	as_tibble() %>% 
+	mutate(lemma = dimnames(keyverb_regression_summary[,7,1:3])[[1]],
+		   verb_ranking = verb_ranking) %>% 
+	mutate(lemma = fct_reorder(lemma, -verb_ranking)) %>% 
+	filter(verb_ranking <= 30)
+
+data_disp_fict <- keyverb_regression_summary[,8,1:3] %>% 
+	as_tibble() %>% 
+	mutate(lemma = dimnames(keyverb_regression_summary[,8,1:3])[[1]],
+		   verb_ranking = verb_ranking) %>% 
+	mutate(lemma = fct_reorder(lemma, -verb_ranking)) %>% 
+	filter(verb_ranking <= 30)
+
+data_disp <- data_disp[order(data_disp$verb_ranking),]
+data_disp_fict <- data_disp_fict[order(-data_disp_fict$verb_ranking),]
+
+data_shading <- data.frame(
+		x1=rep(0, 15), 
+		x2=rep(1, 15), 
+		y1=seq(2,31,2)-.5, 
+		y2=seq(3,32,2)-.5)
+
+p_disp <-  ggplot() + 
+	geom_rect(data=data_shading,
+			  aes(xmin=x1, xmax=x2, ymin=y1, ymax=y2), fill="grey90") + 
+	geom_point(data=data_disp, aes(x=estimate, y=lemma), size=1) +
+	geom_point(data=data_disp_fict, aes(x=estimate, y=lemma), size=1, shape=3, color=1, alpha=.1) +
+	geom_linerange(data=data_disp,aes(y=lemma, xmin=(lower_ci), xmax=(upper_ci))) +
+	ylab(NULL) + xlab("DNB") +
+	scale_y_discrete(labels=NULL) +
+	scale_x_continuous(limits=c(0,1),
+					   breaks=c(0, .5, 1),
+					   labels=c("0", ".50", "1"),
+					   minor_breaks=c(.25,.75),
+					   expand=c(0,0)) +
+	ggtitle(label = "\nGenerality") +
+	theme_minimal() +
+	theme(plot.title = element_text(size=10, hjust = 0.5),
+		  axis.title.x = element_text(size=10),
+		  panel.grid.major.y = element_blank())
+
+
+
+# Comparative generality (dispersion difference) -------------------------------
+
+data_disp_diff <-  keyverb_regression_summary[,9,1:3] %>% 
+	as_tibble() %>% 
+	mutate(lemma = dimnames(keyverb_regression_summary[,9,1:3])[[1]],
+		   verb_ranking = verb_ranking) %>% 
+	mutate(lemma = fct_reorder(lemma, -verb_ranking)) %>% 
+	filter(verb_ranking <= 30)
+
+data_disp_diff <- data_disp_diff[order(data_disp_diff$verb_ranking),]
+
+data_shading <- data.frame(
+		x1=rep(-.25, 15), 
+		x2=rep(.75, 15), 
+		y1=seq(2,31,2)-.5, 
+		y2=seq(3,32,2)-.5)
+
+p_disp_diff <- ggplot() + 
+	geom_rect(data=data_shading,
+			  aes(xmin=x1, xmax=x2, ymin=y1, ymax=y2), fill="grey90") +
+	geom_vline(xintercept=0) +
+	geom_point(data=data_disp_diff, aes(x=estimate, y=lemma), size=1) +
+	geom_linerange(data=data_disp_diff, aes(y=lemma, xmin=(lower_ci), xmax=(upper_ci))) +
+	ylab(NULL) + xlab("DNB difference") +
+	scale_y_discrete(labels=NULL) +
+	scale_x_continuous(limits=c(-.25, .75),
+					   breaks=c(-.5, 0,.5, 1),
+					   labels=c("\u2212.50", "0", "+.50", "+1"),
+					   minor_breaks=c(-.25, .25, .75),
+					   expand=c(0,0)) +
+	ggtitle(label = "\nComparative generality") +
+	theme_minimal() +
+	theme(plot.title = element_text(size=10, hjust = 0.5),
+		  axis.title.x = element_text(size=10),
+		  panel.grid.major.y = element_blank())
+```
+
+```{r fig.height=4, fig.width=8}
+cowplot::plot_grid(p_irr, NULL, p_rate, NULL, p_disp, NULL, p_disp_diff,
+				   nrow=1,
+				   rel_widths = c(1.32,-.05,1,-.05,1,-.05,1.05))
+
+cairo_pdf(file = "./figures/fig05_regression_keyness_dashboard.pdf", width=7, height=4)
+cowplot::plot_grid(p_irr, NULL, p_rate, NULL, p_disp, NULL, p_disp_diff,
+				   nrow=1,
+				   rel_widths = c(1.32,-.05,1,-.05,1,-.05,1.05))
+dev.off()
+
+```
+
+
+Export results for table in Appendix.
+
+```{r}
+top_30 <- keyverb_regression_summary[verb_ranking <=30, c(1,2,3,7,8,9), 1]
+top_30 <- data.frame(top_30)
+top_30$rate_ACAD <- round((top_30$rate_ACAD*1e4),2)
+top_30$rate_FIC <- round((top_30$rate_FIC*1e4),2)
+top_30$rate_ratio <- round((top_30$rate_ratio),1)
+top_30$disp_ACAD <- round((top_30$disp_ACAD),2)
+top_30$disp_FIC <- round((top_30$disp_FIC),2)
+top_30$disp_diff <- round((top_30$disp_diff),2)
+
+top_30$verb_ranking <- verb_ranking[verb_ranking <=30]
+top_30 <- top_30[order(top_30$verb_ranking),]
+str(top_30)
+
+write.csv(
+	top_30,
+	here("results",
+		 "table_appendix_top_30_keyverbs.csv"))
+```
+
+
+
+
+
+
+# Performance
+ 
+
+## Figure 6: Coverage properties
+
+
+Load results
+
+```{r}
+keyverb_regression_results_100 <- readRDS(
+	here("results", 
+		 "ci_coverage.rds"))
+
+str(keyverb_regression_results_100)
+
+```
+
+Check if there are missing estimates (due to non-convergence of a model).
+
+```{r}
+sum(is.na(keyverb_regression_results_100))
+```
+
+There are none.
+
+Draw Figure 6.
+
+
+```{r fig.height=2.5, fig.width=4.5}
+data_to_plot <- keyverb_regression_results_100[names(keyverb_regression_results_100[,1,1,1]) == "define" ,1,,]
+data_to_plot <- t(data_to_plot)
+
+pop_proxy <- median(data_to_plot[,1], na.rm = TRUE)
+
+p1 <- xyplot(data_to_plot[,1] ~ 1:100, ylim=c(-9.7,-7.35), xlim=c(-1, 121),
+	   pch=c(19, 19)[((data_to_plot[,1] - 2*data_to_plot[,2]) > pop_proxy | (data_to_plot[,1] + 2*data_to_plot[,2]) < pop_proxy)+1], 
+	   col=c("grey70", "black")[((data_to_plot[,1] - 2*data_to_plot[,2]) > pop_proxy | (data_to_plot[,1] + 2*data_to_plot[,2]) < pop_proxy)+1], 
+	   cex=.5, fill="white",
+	   ylab="Occurrence rate\n(per 10,000 words, log-scaled)\n", xlab=NULL,
+	   scales=list(y=list(at=log(c(1, 2, 3, 4, 5, 6, 7)/1e4), label=c("1", "2", "3", "4", "5", "6", "7"))),
+	   par.settings=my_settings, axis=axis_left,
+	   panel=function(x,y,...){
+	   	panel.segments(y0=pop_proxy, y1=pop_proxy, x0=-1, x1=103, col="grey50")
+	   	panel.segments(x0=x, x1=x, y0=y-2*data_to_plot[,2],
+	   				   y1=y+2*data_to_plot[,2],
+	   				   col=c("grey70", "black")[((data_to_plot[,1] - 2*data_to_plot[,2]) > pop_proxy | (data_to_plot[,1] + 2*data_to_plot[,2]) < pop_proxy)+1])
+	   	panel.xyplot(x,y,...)
+	   	panel.text(x=104, y=pop_proxy, label="Population\nproxy", adj=c(0,.8), col="grey50", lineheight=.8)
+	   	panel.text(x=0, y=-6.95, label="Estimates (+ 95% CIs) from 100 different data subsets", adj=0)
+	   	panel.text(x=0, y=-7.16, label="Verb: ", adj=0)
+	   	panel.text(x=0, y=-7.17, label="             DEFINE", adj=0, cex=.85)
+	   	panel.points(x = which(is.na(data_to_plot[,1])), y = -7.35, pch = 0, lwd = .5, col = "grey")
+	   })
+
+print(p1, position=c(0,-.19, 1, .87))
+
+cairo_pdf(file = "./figures/fig06_coverage_method.pdf", width=4.2, height=1.8)
+print(p1, position=c(.02,-.19, 1, .87))
+dev.off()
+
+exp(pop_proxy)*1e4
+
+```
+
+## Figure 7: Coverage results
+
+```{r}
+coverage <- matrix(
+	NA, ncol=6, nrow=700, 
+	dimnames = list(
+		names(keyverb_regression_results_100[,1,1,1]),
+		c("rate_ACAD", "rate_FIC", "rate_ratio",
+		  "scale_ACAD", "scale_FIC", "scale_ratio")))
+
+str(keyverb_regression_results_100)
+
+for(i in 1:700){
+	data_to_evaluate <- t(keyverb_regression_results_100[i,1,,])
+	pop_proxy <- median(data_to_evaluate[,1])
+	coverage[i, 1] <- 100 - sum((data_to_evaluate[,1] - 2*data_to_evaluate[,2]) > pop_proxy | (data_to_evaluate[,1] + 2*data_to_evaluate[,2]) < pop_proxy, na.rm=T) /
+		sum(!is.na(data_to_evaluate[,1]))*100
+	rm(data_to_evaluate, pop_proxy)
+	
+	data_to_evaluate <- t(keyverb_regression_results_100[i,2,,])
+	pop_proxy <- median(data_to_evaluate[,1])
+	coverage[i, 2] <- 100 - sum((data_to_evaluate[,1] - 2*data_to_evaluate[,2]) > pop_proxy | (data_to_evaluate[,1] + 2*data_to_evaluate[,2]) < pop_proxy, na.rm=T) /
+		sum(!is.na(data_to_evaluate[,1]))*100
+	rm(data_to_evaluate, pop_proxy)
+	
+	data_to_evaluate <- t(keyverb_regression_results_100[i,5,,])
+	pop_proxy <- median(data_to_evaluate[,1])
+	coverage[i, 3] <- 100 - sum((data_to_evaluate[,1] - 2*data_to_evaluate[,2]) > pop_proxy | (data_to_evaluate[,1] + 2*data_to_evaluate[,2]) < pop_proxy, na.rm=T) /
+		sum(!is.na(data_to_evaluate[,1]))*100
+	rm(data_to_evaluate, pop_proxy)
+	
+	data_to_evaluate <- t(keyverb_regression_results_100[i,3,,])
+	pop_proxy <- median(data_to_evaluate[,1])
+	coverage[i, 4] <- 100 - sum((data_to_evaluate[,1] - 2*data_to_evaluate[,2]) > pop_proxy | (data_to_evaluate[,1] + 2*data_to_evaluate[,2]) < pop_proxy, na.rm=T) /
+		sum(!is.na(data_to_evaluate[,1]))*100
+	rm(data_to_evaluate, pop_proxy)
+	
+	data_to_evaluate <- t(keyverb_regression_results_100[i,4,,])
+	pop_proxy <- median(data_to_evaluate[,1])
+	coverage[i, 5] <- 100 - sum((data_to_evaluate[,1] - 2*data_to_evaluate[,2]) > pop_proxy | (data_to_evaluate[,1] + 2*data_to_evaluate[,2]) < pop_proxy, na.rm=T) /
+		sum(!is.na(data_to_evaluate[,1]))*100
+	rm(data_to_evaluate, pop_proxy)
+	
+	data_to_evaluate <- t(keyverb_regression_results_100[i,6,,])
+	pop_proxy <- median(data_to_evaluate[,1])
+	coverage[i, 6] <- 100 - sum((data_to_evaluate[,1] - 2*data_to_evaluate[,2]) > pop_proxy | (data_to_evaluate[,1] + 2*data_to_evaluate[,2]) < pop_proxy, na.rm=T) /
+		sum(!is.na(data_to_evaluate[,1]))*100
+	rm(data_to_evaluate, pop_proxy)
+}
+```
+
+
+```{r fig.height=3, fig.width=5}
+library(tidyverse)
+library(ggridges)
+
+coverage2 <- data.frame(
+	coverage[,1:3],
+	"blank" = NA,
+	coverage[,4:6])
+
+p1 <- coverage2 %>%
+	as_tibble() %>% 
+	gather(rate_ACAD:scale_ratio, key="measure", value="score") %>% 
+	mutate(measure = factor(measure, levels=rev(c("rate_ACAD", "rate_FIC", "rate_ratio", "blank",
+				   	  "scale_ACAD", "scale_FIC", "scale_ratio")), ordered=T)) %>% 
+	ggplot(aes(x=score, y=measure)) + 
+	ylab(" ") + xlab("Coverage rate") +
+	scale_y_discrete(labels=rev(c("Occurrence rate  ACAD", "FIC", "Ratio", " ", "Scale parameter  ACAD", "FIC", "Ratio"))) +
+	scale_x_continuous(limits=c(-1,101), expand=c(0,0), breaks = c(0, 20, 40, 60, 80, 100),
+					   minor_breaks = c(10, 30, 50, 70, 90)) +
+	geom_density_ridges(stat = "binline", bins = 101, scale = 1.35, draw_baseline = F, color="transparent", alpha=.75, fill="grey50") +
+	geom_vline(xintercept = 95, linewidth=.5) +
+	theme_minimal() +
+	theme(#panel.grid = element_blank(),
+		  axis.text.x=element_text(size=9),
+		  axis.title=element_text(size=10),
+		  axis.text.y = element_text(size=10, vjust = 0))
+
+p1
+
+cairo_pdf(file = "./figures/fig07_coverage_results.pdf", width=5, height=2.5)
+p1
+dev.off()
+
+```
+
+
+
+# Check behavior of DNB for Biber et al.'s 150 items
+
+Data
+```{r}
+file_list <- list.files("./data/bnc_150_complete/")
+file_list <- sort(file_list)
+
+list_of_items <- str_split(file_list, pattern = "\\.", simplify = T)[,1]
+
+bnc_150_negbin <- matrix(NA, nrow=150, ncol=4)
+colnames(bnc_150_negbin) <- c("rate", "rate_SE", "scale", "scale_SE")
+
+for(i in 1:length(file_list)){
+	item_bnc <- read.csv(paste0("./data/bnc_150_complete/", file_list[i]), row.names=1)
+	
+	m <- gamlss(n_tokens ~ 1 + offset(log(n_words)), data=item_bnc, family=NBI, trace=F)
+	summary_m <- summary(m)
+	
+	bnc_150_negbin[i,1:2] <- (summary_m[1,1:2])
+	bnc_150_negbin[i,3:4] <- (summary_m[2,1:2])
+		
+	rm(item_bnc)
+	print(i)
+}
+
+rownames(bnc_150_negbin) <- list_of_items
+
+saveRDS(bnc_150_negbin, "./results/bnc_150_negbin.rds")
+
+```
+
+
+```{r fig.height=5, fig.width=6}
+bnc_150_negbin <- readRDS("./results/bnc_150_negbin.rds")
+
+bnc_150_full <- readRDS("./results/regression/bnc_150_dispersion_fulldata.rds")
+bnc_150_full <- data.frame(bnc_150_full)
+
+file_list <- list.files("./data/bnc_150_complete/")
+file_list <- sort(file_list)
+
+list_of_items <- str_split(file_list, pattern = "\\.", simplify = T)[,1]
+
+bnc_150_full$NB_TD <- 1 - dNBI(0, mu=exp(bnc_150_negbin[,1])*1e4, sigma=exp(bnc_150_negbin[,3]))
+bnc_150_full$DNB <- 1-exp(-(1/exp(bnc_150_negbin[,3])))
+
+
+bnc_150_full$item <- list_of_items
+bnc_150_full$log_rate <- bnc_150_negbin[,1]
+str(bnc_150_full)
+```
+
+
+```{r fig.width=2, fig.height=3}
+df_measure_iqr <- bnc_150_full[,-c(2,3,5,6,8)] %>%
+	gather(DP:DNB, key="measure", value="score") %>% 
+	group_by(measure) %>% 
+	dplyr::summarize(iqr = IQR(score),
+					 mdn = median(score),
+					 min_score = min(score),
+					 max_score = max(score))
+
+df_measure_iqr <- data.frame(df_measure_iqr)
+df_measure_iqr$index_formatted <- c("DKL", "DNB", "DP", "NB-TD", "S", "TD", "DA")
+df_measure_iqr <- df_measure_iqr[order(df_measure_iqr$mdn),]
+
+df_measure_iqr <- df_measure_iqr[-7,]
+```
+
+
+## Figure 8: Dispersion analysis of BNC150
+
+```{r fig.width=4, fig.height=2.5}
+p1 <- bnc_150_full[,-c(2,3,5,6,8,11)] %>%
+	gather(DP:DNB, key="measure", value="score") %>% 
+	ggplot(aes(x=score, y=reorder(measure, score, median))) + 
+	ylab(" ") + xlab("Estimated dispersion") +
+	scale_y_discrete(labels=df_measure_iqr$index_formatted) +
+	scale_x_continuous(breaks = 0:1, limits = c(-.01,1.01)) +
+	geom_density_ridges(stat = "binline", bins = 40, scale = 1.05, draw_baseline = F, color="transparent", alpha=.5, 
+						fill=rep(c("grey50", "grey50", "black", "grey50", "grey50", "grey50"), each=84)) +
+	theme_minimal() +
+	annotate(geom = "text", x = 0:1, y = .5, label="|", size=3) +
+	theme(panel.grid = element_blank(),
+		  axis.text.x=element_text(size=9),
+		  axis.title=element_text(size=10),
+		  axis.text.y = element_text(size=10, vjust = 0))
+
+p2 <- bnc_150_full[,-c(2,3,5,6,8,11)] %>%
+	gather(DP:DNB, key="measure", value="score") %>% 
+	ggplot(aes(x=score, y=reorder(measure, score, median))) + 
+	ylab(" ") + xlab(" ") +
+	scale_y_discrete(labels=NULL, breaks=NULL) +
+	scale_x_continuous(breaks = c(.35,.8), limits = c(.1,1), labels=c(" ", " ")) +
+	geom_density_ridges(stat = "binline", bins = 40, scale = 1.05, draw_baseline = F, color="transparent", fill="transparent") +
+	theme_minimal() +
+	annotate(geom = "text", x = .1,  y = (1:6)*1.88+.2, label=numformat(df_measure_iqr$mdn), size=3.3) +
+	annotate(geom = "text", x = .35, y = (1:6)*1.88+.2, label=numformat(df_measure_iqr$iqr), size=3.3) +
+	annotate(geom = "text", x = .78, y = (1:6)*1.88+.2, label=paste0("[", numformat(df_measure_iqr$min_score), ";"), size=3.3, adj=1) +
+	annotate(geom = "text", x = .98, y = (1:6)*1.88+.2, label=paste0(numformat(df_measure_iqr$max_score), "]"), size=3.3, adj=1) +
+	annotate(geom = "text", x = c(.1,.35,.78), y = 12.2, label=c("Mdn", "IQR", "Range"), size=3.3, fontface=3) +
+	theme(panel.grid = element_blank()) +
+	coord_cartesian(clip="off") 
+
+cowplot::plot_grid(NULL, NULL, p1, p2, nrow=2, rel_widths = c(.8,.5), rel_heights=c(.01,1))
+
+
+
+cairo_pdf(file = "./figures/fig08_BNC150_with_DNB.pdf", width=3.8, height=2.3)
+cowplot::plot_grid(NULL, NULL, p1, p2, nrow=2, rel_widths = c(.7,.5), rel_heights=c(.01,1))
+dev.off()
+
+
+```
+
+
+
+## Figure 9: Correlation frequency and dispersion (scatterplot)
+
+
+```{r fig.height=3.5, fig.width=4}
+p1 <- bnc_150_full[,c(1,4,7,9,10,12,14)] %>% 
+	gather(DP:DNB, key = dispersion_measure, value=score) %>% 
+	mutate(dispersion_measure = factor(
+		dispersion_measure, 
+		levels=rev(c("Sadj", "DP", "DNB", "TD", "rDA", "DKL")),
+		labels=rev(c("S", "DP", "DNB", "TD", "DA", "DKL")),
+		ordered=T)) %>% 
+	ggplot(aes(x=log_rate, y=score)) +
+	geom_point(pch=16, alpha=.25) +
+	facet_wrap(~dispersion_measure, nrow = 2, dir = "h") +
+	theme_light() +
+	ylab("Dispersion") + xlab("Frequency (per 10,000 words, log-scaled)") +
+	scale_y_continuous(breaks=c(0,.5,1), label=c("0", ".5", "1")) +
+	scale_x_continuous(breaks=log(c( .1, 1, 10,100)/1e4),
+								  label=c(".1", "1", "10"," 100")) +
+	theme(strip.background = element_rect(fill=NA),
+		  strip.text = element_text(color=1, size=11),
+		  panel.grid.minor = element_blank())
+
+p1
+
+cairo_pdf(file = "./figures/fig09_correlation_dispersion_frequency_scatterplot.pdf", width=4.5, height=4)
+p1
+dev.off()
+
+```
+
+
+
+## Figure 10: Correlation frequency and dispersion (dot plot)
+
+```{r fig.height=2, fig.width=3}
+
+correlation_disp_freq <- matrix(NA, ncol=3, nrow=6)
+
+rownames(correlation_disp_freq) <- c("DP", "DA", "S", "TD", "DKL", "DNB")
+
+colnames(correlation_disp_freq) <- c("correlation", "ci_lo", "ci_up")
+
+pick_measure <- c(1,4,7,9,10,12)
+
+for(i in 1:6){
+	correlation_disp_freq[i,1]   <- cor(bnc_150_full[,pick_measure[i]], bnc_150_full[,14])
+	correlation_disp_freq[i,2:3] <- cor.test(bnc_150_full[,pick_measure[i]], bnc_150_full[,14])$conf.int[1:2]
+}
+
+correlation_disp_freq <- data.frame(correlation_disp_freq)
+
+correlation_disp_freq <- correlation_disp_freq[order(correlation_disp_freq$correlation),]
+
+p1 <- xyplot(1 ~ 1, type="n", xlim=c(.55,1), ylim=c(.25,6.25),
+	   xlab="Correlation with (log) frequency", ylab=NULL,
+	   par.settings=my_settings, axis=axis_L,
+	   scales=list(y=list(at=1:6, label=rownames(correlation_disp_freq), tck=0, cex=.9),
+	   			x=list(at=c(.6,.7,.8,.9,1), label=c(".60",".70",".80",".90","1"))),
+	   panel=function(x,y){
+	   	panel.points(x=correlation_disp_freq$correlation, y=1:6, pch=19, col=1)
+	   	panel.segments(x0=correlation_disp_freq$ci_lo, x1=correlation_disp_freq$ci_up, y0=1:6, y1=1:6, col=1)
+	   })
+
+p1
+
+cairo_pdf(file = "./figures/fig10_correlation_dispersion_frequency_dotplot.pdf", width=2.5, height=1.25)
+p1
+dev.off()
+
+round(correlation_disp_freq, 2)
+```
+
+
+
+
+
+
+
+
+
